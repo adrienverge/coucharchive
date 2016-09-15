@@ -1,0 +1,16 @@
+couchbackup
+===========
+
+Save / restore a single-server CouchDB data files. It will save:
+- /var/lib/couchdb
+- /etc/couchdb/vm.args (because the node name is important)
+
+Save to a file
+--------------
+
+  ./couchbackup.sh $HOST dump /tmp/couchbackup.tar.gz
+
+Restore from a file
+-------------------
+
+  ./couchbackup.sh $HOST load /tmp/couchbackup.tar.gz
