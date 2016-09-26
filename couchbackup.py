@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# Copyright 2016 Adrien Vergé
+# All rights reserved
+
+import argparse
+from datetime import datetime
+import fileinput
+from io import BytesIO
+import os
+import random
+import re
+import shutil
+import socket
+import string
+import subprocess
+import tarfile
+import tempfile
+import threading
+import time
+from urllib.parse import urlparse
+import urllib.request
+
+import couchdb
+
+
+class CouchDBInstance(object):
+    def __init__(self):
+        self.tempdir = tempfile.TemporaryDirectory(prefix='couchbackup-')
+        self.thread = None
+        self.url = None
+
+        self._setup()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        if self.thread is not None:
+            self.stop()
+
+    @property
+    def confdir(self):
+        return self.tempdir.name + '/etc'
+
+    @property
+    def datadir(self):
+        return self.tempdir.name + '/data'
+
+    def _random_credential(self):
+        return 'root', ''.join(
+            random.choice(string.ascii_letters + string.digits)
+            for _ in range(10))
+
+    def _two_unused_ports(self):
+        s1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s1.bind(('localhost', 0))
+        _, port1 = s1.getsockname()
+        s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s2.bind(('localhost', 0))
+        _, port2 = s2.getsockname()
+        s1.close()
+        s2.close()
+        return port1, port2
+
+    def _setup(self):
+        os.mkdir(self.confdir)
+        os.mkdir(self.confdir + '/local.d')
+        os.mkdir(self.datadir)
+
+        for file in ('vm.args', 'default.ini', 'local.ini'):
+            shutil.copy('/etc/couchdb/' + file, self.confdir + '/' + file)
+
+        for line in fileinput.input(self.confdir + '/vm.args', inplace=True):
+            if re.match(r'^-name \S+$', line):
+                print('-name couchbackup@localhost')
+            else:
+                print(line, end='')
+
+        self.creds = self._random_credential()
+        self.ports = self._two_unused_ports()
+
+        with open(self.confdir + '/local.d/couchbackup.ini', 'w') as f:
+            f.write('[chttpd]\n'
+                    'port = %d\n' % self.ports[0] +
+                    '\n'
+                    '[httpd]\n'
+                    'port = %d\n' % self.ports[1] +
+                    '\n'
+                    '[couchdb]\n'
+                    'database_dir = %s\n' % self.datadir +
+                    'view_index_dir = %s\n' % self.datadir +
+                    '\n'
+                    '[admins]\n'
+                    '%s = %s\n' % self.creds)
+
+    def start(self):
+        env = dict(os.environ,
+                   COUCHDB_VM_ARGS=self.confdir + '/vm.args',
+                   COUCHDB_INI_FILES=(self.confdir + '/default.ini ' +
+                                      self.confdir + '/local.ini ' +
+                                      self.confdir + '/local.d'))
+        log = open(self.tempdir.name + '/log', 'w')
+
+        class CouchDBRunnerThread(threading.Thread):
+            def __init__(self):
+                super().__init__()
+                self.process = None
+
+            def run(self):
+                self.process = subprocess.Popen('couchdb', env=env,
+                                                stdout=log, stderr=log)
+                self.process.wait()
+
+            def terminate(self):
+                self.process.terminate()
+
+        self.thread = CouchDBRunnerThread()
+        self.thread.start()
+
+        self.url = 'http://%s:%s@localhost:%d' % (self.creds + self.ports[:1])
+
+        for i in range(25):
+            if not self.thread.is_alive():
+                raise Exception('CouchDB process died')
+            try:
+                self.version = (urllib.request.urlopen('http://localhost:%d'
+                                                       % self.ports[0])
+                                .read().decode('utf-8'))
+                if '"couchdb":"Welcome"' in self.version:
+                    return
+
+                self.thread.terminate()
+                raise Exception('CouchDB answered: %s' % self.version)
+            except urllib.error.URLError:
+                time.sleep(0.2)
+
+        self.thread.terminate()
+        raise Exception('CouchDB server does not answer after 5 seconds')
+
+    def stop(self):
+        print('Terminating local CouchDB instance')
+        self.thread.terminate()
+        self.thread.join()
+        self.thread = None
+
+
+def replicate_couchdb_server(source_url, target_url):
+    while source_url.endswith('/'):
+        source_url = source_url[:-1]
+    while target_url.endswith('/'):
+        target_url = target_url[:-1]
+
+    source_host = (urlparse(source_url).netloc
+                   .rsplit('@', 1)[-1].rsplit(':', 1)[0])
+    source_is_local = (source_host == 'localhost' or
+                       source_host == '127.0.0.1' or source_host == '::1')
+
+    source = couchdb.Server(source_url)
+    target = couchdb.Server(target_url)
+
+    all_dbs = list(source)
+
+    for db in all_dbs:
+        print('Creating database "%s"' % db)
+        target.create(db)
+
+        print('Replicating database "%s"' % db)
+        server = source if source_is_local else target
+        server.replicate(source_url + '/' + db, target_url + '/' + db)
+
+        source_db = couchdb.Database(source_url + '/' + db)
+        target_db = couchdb.Database(target_url + '/' + db)
+
+        print('Replicating _security for "%s"' % db)
+        target_db.security = source_db.security
+
+        source_len, target_len = len(source_db), len(target_db)
+        if source_len != target_len:
+            raise Exception(
+                'Replicated database has %d docs, source has %d'
+                % (source_len, target_len))
+
+
+def dump(source, filename):
+    with CouchDBInstance() as local_couchdb:
+        local_couchdb.start()
+        print('Launched CouchDB instance at %s' % local_couchdb.url)
+
+        replicate_couchdb_server(source, local_couchdb.url)
+
+        local_couchdb.stop()
+
+        print('Creating backup archive at %s' % filename)
+        with tarfile.open(filename, 'w:gz') as tar:
+            tar.add(local_couchdb.confdir, arcname='etc')
+            tar.add(local_couchdb.datadir, arcname='data')
+
+            info = (
+                'CouchDB backup made on %s\n' % datetime.now().isoformat() +
+                'with CouchDB version %s\n' % local_couchdb.version
+            ).encode('utf-8')
+            tarinfo = tarfile.TarInfo('info')
+            tarinfo.size = len(info)
+            tar.addfile(tarinfo, BytesIO(info))
+
+
+def load(target, filename):
+    if not os.path.isfile(filename):
+        raise Exception('File "%s" does not exist' % filename)
+
+    with CouchDBInstance() as local_couchdb:
+        with tarfile.open(filename) as tar, \
+                tempfile.TemporaryDirectory(prefix='couchbackup-') as tmp:
+            print('Extracting backup archive from %s' % filename)
+
+            tar.extractall(path=tmp)
+            os.rmdir(local_couchdb.datadir)
+            os.rename(tmp + '/data', local_couchdb.datadir)
+
+        local_couchdb.start()
+        print('Launched CouchDB instance at %s' % local_couchdb.url)
+
+        replicate_couchdb_server(local_couchdb.url, target)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest='action')
+    dump_parser = subparsers.add_parser('dump')
+    dump_parser.add_argument('-o', '--output-file', dest='output_file',
+                             required=True, action='store',
+                             help='path to archive to create')
+    dump_parser.add_argument('source', metavar='COUCHDB_URL',
+                             help='URL of CouchDB server')
+    load_parser = subparsers.add_parser('load')
+    load_parser.add_argument('-i', '--input-file', dest='input_file',
+                             required=True, action='store',
+                             help='path to archive to read')
+    load_parser.add_argument('target', metavar='COUCHDB_URL',
+                             help='URL of CouchDB server')
+
+    args = parser.parse_args()
+
+    if args.action == 'dump':
+        dump(args.source, args.output_file)
+    elif args.action == 'load':
+        load(args.target, args.input_file)
+
+
+if __name__ == '__main__':
+    main()

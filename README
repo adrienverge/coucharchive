@@ -1,16 +1,33 @@
 couchbackup
 ===========
 
-Save / restore a single-server CouchDB data files. It will save:
-- /var/lib/couchdb
-- /etc/couchdb/vm.args (because the node name is important)
+Dump/restore a whole CouchDB server contents to/from a single tar.gz file.
 
-Save to a file
---------------
+Useful for making backups, or replicating your database to a secondary test
+environment.
 
-  ./couchbackup.sh $HOST dump /tmp/couchbackup.tar.gz
+How it works?
+-------------
 
-Restore from a file
--------------------
+couchbackup spawns a local CouchDB instance locally, using a temporary directory
+for storing data and configuration.
 
-  ./couchbackup.sh $HOST load /tmp/couchbackup.tar.gz
+When dumping, it replicates your source CouchDB server (i.e. replicates all dbs,
+including `_users`) to the fresh local one, then saves and compresses its data
+to a tar.gz archive.
+
+When loading, it uncompresses the archive, has the local CouchDB instance use it
+as its data, then replicated to your remote CouchDB server.
+
+Examples
+--------
+
+Dumping:
+
+  ./couchbackup.py dump -o /tmp/couchbackup.tar.gz \
+    http://me:pass@my.server.com:5984
+
+Restoring:
+
+  ./couchbackup.py load -i /tmp/couchbackup.tar.gz \
+    http://me:pass@another.server.com:5984
