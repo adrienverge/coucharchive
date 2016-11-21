@@ -260,6 +260,9 @@ def main():
         dump(url, args.output_file)
     elif args.action == 'load':
         load(url, args.input_file)
+    else:
+        parser.print_usage()
+        parser.exit(1)
 
 
 if __name__ == '__main__':
