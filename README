@@ -22,12 +22,17 @@ as its data, then replicated to your remote CouchDB server.
 Examples
 --------
 
-Dumping:
+Set-up the database server info in `config.ini`:
 
-  ./couchbackup.py dump -o /tmp/couchbackup.tar.gz \
-    http://me:pass@my.server.com:5984
+  [database]
+  url = http://my-server.com:5984
+  username = root
+  password = p4ss
 
-Restoring:
+Dumping database to a file:
 
-  ./couchbackup.py load -i /tmp/couchbackup.tar.gz \
-    http://me:pass@another.server.com:5984
+  ./couchbackup.py dump -o /tmp/couchbackup.tar.gz
+
+Restoring database from an archive:
+
+  ./couchbackup.py load -i /tmp/couchbackup.tar.gz

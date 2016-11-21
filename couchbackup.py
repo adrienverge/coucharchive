@@ -4,6 +4,7 @@
 # All rights reserved
 
 import argparse
+import configparser
 from datetime import datetime
 import fileinput
 from io import BytesIO
@@ -18,7 +19,7 @@ import tarfile
 import tempfile
 import threading
 import time
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 import urllib.request
 
 import couchdb
@@ -224,28 +225,41 @@ def load(target, filename):
         replicate_couchdb_server(local_couchdb.url, target)
 
 
+def couchdb_url(url, username, password):
+    parts = list(urlsplit(url))
+    parts[1] = '%s:%s@%s' % (quote(username, safe=[]),
+                             quote(password, safe=[]),
+                             parts[1])
+    return urlunsplit(parts)  # http://user:pass@server/db/
+
+
 def main():
+    # Get action and archive file from command line
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest='action')
     dump_parser = subparsers.add_parser('dump')
     dump_parser.add_argument('-o', '--output-file', dest='output_file',
                              required=True, action='store',
                              help='path to archive to create')
-    dump_parser.add_argument('source', metavar='COUCHDB_URL',
-                             help='URL of CouchDB server')
     load_parser = subparsers.add_parser('load')
     load_parser.add_argument('-i', '--input-file', dest='input_file',
                              required=True, action='store',
                              help='path to archive to read')
-    load_parser.add_argument('target', metavar='COUCHDB_URL',
-                             help='URL of CouchDB server')
-
     args = parser.parse_args()
 
+    # Get database server info using the config file
+    config = configparser.ConfigParser()
+    config_file = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                               'config.ini')
+    config.read(config_file)
+    url = couchdb_url(config['database']['url'],
+                      config['database'].get('username', 'root'),
+                      config['database'].get('password', ''))
+
     if args.action == 'dump':
-        dump(args.source, args.output_file)
+        dump(url, args.output_file)
     elif args.action == 'load':
-        load(args.target, args.input_file)
+        load(url, args.input_file)
 
 
 if __name__ == '__main__':
