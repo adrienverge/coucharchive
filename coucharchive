@@ -236,6 +236,8 @@ def couchdb_url(url, username, password):
 def main():
     # Get action and archive file from command line
     parser = argparse.ArgumentParser()
+    parser.add_argument('-c', '--config', dest='config_file', required=True,
+                        action='store', help='path to config file')
     subparsers = parser.add_subparsers(dest='action')
     dump_parser = subparsers.add_parser('dump')
     dump_parser.add_argument('-o', '--output-file', dest='output_file',
@@ -249,9 +251,7 @@ def main():
 
     # Get database server info using the config file
     config = configparser.ConfigParser()
-    config_file = os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                               'config.ini')
-    config.read(config_file)
+    config.read(args.config_file)
     url = couchdb_url(config['database']['url'],
                       config['database'].get('username', 'root'),
                       config['database'].get('password', ''))
