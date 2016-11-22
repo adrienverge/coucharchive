@@ -10,6 +10,8 @@ setup(
     author='Adrien Vergé',
     url='https://github.com/adrienverge/coucharchive',
     license='MIT',
+    description=('Dump/restore a whole CouchDB server contents to/from a '
+                 'single tar.gz file.'),
 
     scripts=['coucharchive'],
     install_requires=[
