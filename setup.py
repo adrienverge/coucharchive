@@ -9,6 +9,7 @@ setup(
     version='1.0.0',
     author='Adrien Vergé',
     url='https://github.com/adrienverge/coucharchive',
+    license='MIT',
 
     scripts=['coucharchive'],
     install_requires=[
