@@ -6,6 +6,13 @@ Dump/restore a whole CouchDB server contents to/from a single tar.gz file.
 Useful for making backups, or replicating your database to a secondary test
 environment.
 
+Installation
+------------
+
+Using pip:
+
+  sudo pip3 install coucharchive
+
 How it works?
 -------------
 
