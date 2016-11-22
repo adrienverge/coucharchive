@@ -1,5 +1,5 @@
-couchbackup
-===========
+coucharchive
+============
 
 Dump/restore a whole CouchDB server contents to/from a single tar.gz file.
 
@@ -9,7 +9,7 @@ environment.
 How it works?
 -------------
 
-couchbackup spawns a local CouchDB instance locally, using a temporary directory
+coucharchive spawns a local CouchDB instance locally, using a temporary directory
 for storing data and configuration.
 
 When dumping, it replicates your source CouchDB server (i.e. replicates all dbs,
@@ -31,22 +31,22 @@ Set-up the database server info in `config.ini`:
 
 Dumping database to a file:
 
-  ./couchbackup.py dump -o /tmp/couchbackup.tar.gz
+  ./coucharchive.py dump -o /tmp/coucharchive.tar.gz
 
 Restoring database from an archive:
 
-  ./couchbackup.py load -i /tmp/couchbackup.tar.gz
+  ./coucharchive.py load -i /tmp/coucharchive.tar.gz
 
 Go further
 ----------
 
 For instance, save a backup to S3 and notify somebody via email:
 
-  aws s3 cp /tmp/couchbackup.tar.gz s3://my-backups/couchbackup.tar.gz
+  aws s3 cp /tmp/archive.tar.gz s3://my-backups/archive.tar.gz
   cat >/tmp/email.txt <<EOM
   Subject: New backup saved on S3
 
-  A CouchDB backup called couchbackup.tar.gz was successfully created and pushed
+  A CouchDB backup called archive.tar.gz was successfully created and pushed
   on Amazon S3.
   EOM
   sendmail user@example.com </tmp/email.txt

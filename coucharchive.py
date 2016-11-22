@@ -27,7 +27,7 @@ import couchdb
 
 class CouchDBInstance(object):
     def __init__(self):
-        self.tempdir = tempfile.TemporaryDirectory(prefix='couchbackup-')
+        self.tempdir = tempfile.TemporaryDirectory(prefix='coucharchive-')
         self.thread = None
         self.url = None
 
@@ -74,14 +74,14 @@ class CouchDBInstance(object):
 
         for line in fileinput.input(self.confdir + '/vm.args', inplace=True):
             if re.match(r'^-name \S+$', line):
-                print('-name couchbackup@localhost')
+                print('-name coucharchive@localhost')
             else:
                 print(line, end='')
 
         self.creds = self._random_credential()
         self.ports = self._two_unused_ports()
 
-        with open(self.confdir + '/local.d/couchbackup.ini', 'w') as f:
+        with open(self.confdir + '/local.d/coucharchive.ini', 'w') as f:
             f.write('[chttpd]\n'
                     'port = %d\n' % self.ports[0] +
                     '\n'
@@ -212,7 +212,7 @@ def load(target, filename):
 
     with CouchDBInstance() as local_couchdb:
         with tarfile.open(filename) as tar, \
-                tempfile.TemporaryDirectory(prefix='couchbackup-') as tmp:
+                tempfile.TemporaryDirectory(prefix='coucharchive-') as tmp:
             print('Extracting backup archive from %s' % filename)
 
             tar.extractall(path=tmp)
