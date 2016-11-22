@@ -8,7 +8,7 @@ setup(
     name='coucharchive',
     version='1.0.0',
     author='Adrien Vergé',
-    url='https://github.com/tolteck/coucharchive',
+    url='https://github.com/adrienverge/coucharchive',
 
     scripts=['coucharchive'],
     requires=[
