@@ -1,7 +1,7 @@
 # Copyright 2016 Adrien Vergé
 # All rights reserved
 
-from distutils.core import setup
+from setuptools import setup
 
 
 setup(
@@ -11,7 +11,7 @@ setup(
     url='https://github.com/adrienverge/coucharchive',
 
     scripts=['coucharchive'],
-    requires=[
-        'CouchDB',
+    install_requires=[
+        'CouchDB >=1.0.1',
     ],
 )
