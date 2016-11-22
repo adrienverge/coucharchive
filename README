@@ -36,3 +36,17 @@ Dumping database to a file:
 Restoring database from an archive:
 
   ./couchbackup.py load -i /tmp/couchbackup.tar.gz
+
+Go further
+----------
+
+For instance, save a backup to S3 and notify somebody via email:
+
+  aws s3 cp /tmp/couchbackup.tar.gz s3://my-backups/couchbackup.tar.gz
+  cat >/tmp/email.txt <<EOM
+  Subject: New backup saved on S3
+
+  A CouchDB backup called couchbackup.tar.gz was successfully created and pushed
+  on Amazon S3.
+  EOM
+  sendmail user@example.com </tmp/email.txt
