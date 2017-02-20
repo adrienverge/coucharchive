@@ -161,6 +161,9 @@ def replicate_couchdb_server(source_url, target_url):
     target = couchdb.Server(target_url)
 
     all_dbs = list(source)
+    for blacklisted in ('_global_changes', '_metadata', '_replicator'):
+        if blacklisted in all_dbs:
+            all_dbs.remove(blacklisted)
 
     for db in all_dbs:
         print('Creating database "%s"' % db)
