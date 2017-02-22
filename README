@@ -38,11 +38,11 @@ Set-up the database server info in `config.ini`:
 
 Dumping database to a file:
 
-  ./coucharchive.py -c config.ini dump -o /tmp/coucharchive.tar.gz
+  coucharchive -c config.ini dump -o /tmp/coucharchive.tar.gz
 
 Restoring database from an archive:
 
-  ./coucharchive.py -c config.ini load -i /tmp/coucharchive.tar.gz
+  coucharchive -c config.ini load -i /tmp/coucharchive.tar.gz
 
 Go further
 ----------
