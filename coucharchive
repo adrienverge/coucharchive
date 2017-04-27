@@ -257,6 +257,10 @@ def main():
     load_parser.add_argument('-i', '--input-file', dest='input_file',
                              required=True, action='store',
                              help='path to archive to read')
+    load_parser = subparsers.add_parser('replicate')
+    load_parser.add_argument('--source', dest='source', required=True,
+                             action='store',
+                             help='source CouchDB server to replicate')
     args = parser.parse_args()
 
     # Get database server info using the config file
@@ -270,6 +274,8 @@ def main():
         dump(url, args.output_file)
     elif args.action == 'load':
         load(url, args.input_file)
+    elif args.action == 'replicate':
+        replicate_couchdb_server(args.source, url)
     else:
         parser.print_usage()
         parser.exit(1)

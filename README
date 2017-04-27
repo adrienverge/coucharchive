@@ -44,6 +44,11 @@ Restoring database from an archive:
 
   coucharchive -c config.ini load -i /tmp/coucharchive.tar.gz
 
+Restoring database from another CouchDB server:
+
+  coucharchive -c config.ini replicate \
+    --source http://admin:pass@other.server:5984/
+
 Go further
 ----------
 
