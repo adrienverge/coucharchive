@@ -167,7 +167,14 @@ def replicate_couchdb_server(source_url, target_url):
 
     for db in all_dbs:
         print('Creating database "%s"' % db)
-        target.create(db)
+        try:
+            target.create(db)
+        except couchdb.http.PreconditionFailed as e:
+            if e.args[0][0] == 'file_exists' and db in ('_users',):
+                pass
+            else:
+                print(db)
+                raise
 
         print('Replicating database "%s"' % db)
         server = source if source_is_local else target
