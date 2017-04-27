@@ -183,7 +183,7 @@ def replicate_couchdb_server(source_url, target_url):
         if source_len != target_len:
             raise Exception(
                 'Replicated database has %d docs, source has %d'
-                % (source_len, target_len))
+                % (target_len, source_len))
 
 
 def dump(source, filename):
