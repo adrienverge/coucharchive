@@ -26,10 +26,11 @@ import couchdb
 
 
 class CouchDBInstance(object):
-    def __init__(self):
+    def __init__(self, standalone_server=False):
         self.tempdir = tempfile.TemporaryDirectory(prefix='coucharchive-')
         self.thread = None
         self.url = None
+        self.standalone_server = standalone_server
 
         self._setup()
 
@@ -120,6 +121,9 @@ class CouchDBInstance(object):
         self.thread.start()
 
         self.url = 'http://%s:%s@localhost:%d' % (self.creds + self.ports[:1])
+
+        if self.standalone_server:
+            return
 
         for i in range(25):
             if not self.thread.is_alive():
@@ -216,7 +220,7 @@ def dump(source, filename):
             tar.addfile(tarinfo, BytesIO(info))
 
 
-def load(target, filename):
+def load(target, filename, standalone_server=False):
     if not os.path.isfile(filename):
         raise Exception('File "%s" does not exist' % filename)
 
@@ -232,7 +236,13 @@ def load(target, filename):
         local_couchdb.start()
         print('Launched CouchDB instance at %s' % local_couchdb.url)
 
-        replicate_couchdb_server(local_couchdb.url, target)
+        if standalone_server:
+            try:
+                time.sleep(365 * 24 * 3600)
+            except KeyboardInterrupt:
+                pass
+        else:
+            replicate_couchdb_server(local_couchdb.url, target)
 
 
 def couchdb_url(url, username, password):
@@ -257,6 +267,9 @@ def main():
     load_parser.add_argument('-i', '--input-file', dest='input_file',
                              required=True, action='store',
                              help='path to archive to read')
+    load_parser.add_argument('--standalone-server', action='store_true',
+                             help='load archive in a standalone CouchDB '
+                                  'server but do not replicate')
     load_parser = subparsers.add_parser('replicate')
     load_parser.add_argument('--source', dest='source', required=True,
                              action='store',
@@ -273,7 +286,7 @@ def main():
     if args.action == 'dump':
         dump(url, args.output_file)
     elif args.action == 'load':
-        load(url, args.input_file)
+        load(url, args.input_file, args.standalone_server)
     elif args.action == 'replicate':
         replicate_couchdb_server(args.source, url)
     else:
