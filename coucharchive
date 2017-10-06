@@ -27,7 +27,8 @@ import couchdb
 
 
 class CouchDBInstance(object):
-    def __init__(self, standalone_server=False):
+    def __init__(self, erlang_node, standalone_server=False):
+        self.erlang_node = erlang_node
         self.tempdir = tempfile.TemporaryDirectory(prefix='coucharchive-')
         self.thread = None
         self.url = None
@@ -79,7 +80,7 @@ class CouchDBInstance(object):
 
         for line in fileinput.input(self.confdir + '/vm.args', inplace=True):
             if re.match(r'^-name \S+$', line):
-                print('-name coucharchive' + str(self.ports[0]) + '@localhost')
+                print('-name ' + self.erlang_node)
             else:
                 print(line, end='')
 
@@ -210,7 +211,10 @@ def replicate_one_database(args):
 
 
 def dump(source, filename):
-    with CouchDBInstance() as local_couchdb:
+    erlang_node = 'coucharchive-%s@localhost' % ''.join(
+        random.choice(string.ascii_letters + string.digits) for _ in range(10))
+
+    with CouchDBInstance(erlang_node) as local_couchdb:
         local_couchdb.start()
         print('Launched CouchDB instance at %s' % local_couchdb.url)
 
@@ -223,38 +227,48 @@ def dump(source, filename):
             tar.add(local_couchdb.confdir, arcname='etc')
             tar.add(local_couchdb.datadir, arcname='data')
 
+            file = tarfile.TarInfo('erlang_node_name')
+            file.size = len(erlang_node)
+            tar.addfile(file, BytesIO(erlang_node.encode('utf-8')))
+
             info = (
                 'CouchDB backup made on %s\n' % datetime.now().isoformat() +
                 'with CouchDB version %s\n' % local_couchdb.version
             ).encode('utf-8')
-            tarinfo = tarfile.TarInfo('info')
-            tarinfo.size = len(info)
-            tar.addfile(tarinfo, BytesIO(info))
+            file = tarfile.TarInfo('info')
+            file.size = len(info)
+            tar.addfile(file, BytesIO(info))
 
 
 def load(target, filename, standalone_server=False):
     if not os.path.isfile(filename):
         raise Exception('File "%s" does not exist' % filename)
 
-    with CouchDBInstance() as local_couchdb:
-        with tarfile.open(filename) as tar, \
-                tempfile.TemporaryDirectory(prefix='coucharchive-') as tmp:
-            print('Extracting backup archive from %s' % filename)
+    with tarfile.open(filename) as tar, \
+            tempfile.TemporaryDirectory(prefix='coucharchive-') as tmp:
+        print('Extracting backup archive from %s' % filename)
+        tar.extractall(path=tmp)
 
-            tar.extractall(path=tmp)
+        if os.path.isfile(tmp + '/erlang_node_name'):
+            with open(tmp + '/erlang_node_name', 'r') as f:
+                erlang_node = f.read().strip()
+        else:  # for archives made before coucharchive 1.2.1
+            erlang_node = 'coucharchive@localhost'
+
+        with CouchDBInstance(erlang_node) as local_couchdb:
             os.rmdir(local_couchdb.datadir)
             os.rename(tmp + '/data', local_couchdb.datadir)
 
-        local_couchdb.start()
-        print('Launched CouchDB instance at %s' % local_couchdb.url)
+            local_couchdb.start()
+            print('Launched CouchDB instance at %s' % local_couchdb.url)
 
-        if standalone_server:
-            try:
-                time.sleep(365 * 24 * 3600)
-            except KeyboardInterrupt:
-                pass
-        else:
-            replicate_couchdb_server(local_couchdb.url, target)
+            if standalone_server:
+                try:
+                    time.sleep(365 * 24 * 3600)
+                except KeyboardInterrupt:
+                    pass
+            else:
+                replicate_couchdb_server(local_couchdb.url, target)
 
 
 def couchdb_url(url, username, password):
