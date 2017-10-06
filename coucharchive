@@ -70,17 +70,17 @@ class CouchDBInstance(object):
         os.mkdir(self.confdir + '/local.d')
         os.mkdir(self.datadir)
 
+        self.creds = self._random_credential()
+        self.ports = self._two_unused_ports()
+
         for file in ('vm.args', 'default.ini', 'local.ini'):
             shutil.copy('/etc/couchdb/' + file, self.confdir + '/' + file)
 
         for line in fileinput.input(self.confdir + '/vm.args', inplace=True):
             if re.match(r'^-name \S+$', line):
-                print('-name coucharchive@localhost')
+                print('-name coucharchive' + str(self.ports[0]) + '@localhost')
             else:
                 print(line, end='')
-
-        self.creds = self._random_credential()
-        self.ports = self._two_unused_ports()
 
         with open(self.confdir + '/local.d/coucharchive.ini', 'w') as f:
             f.write('[chttpd]\n'
