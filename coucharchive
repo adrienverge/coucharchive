@@ -8,6 +8,7 @@ import configparser
 from datetime import datetime
 import fileinput
 from io import BytesIO
+import multiprocessing
 import os
 import random
 import re
@@ -156,45 +157,51 @@ def replicate_couchdb_server(source_url, target_url):
     while target_url.endswith('/'):
         target_url = target_url[:-1]
 
+    all_dbs = [db for db in list(couchdb.Server(source_url))
+               if db not in ('_global_changes', '_metadata', '_replicator')]
+
+    todos = [(source_url, target_url, db) for db in all_dbs]
+
+    pool = multiprocessing.Pool(processes=2 * multiprocessing.cpu_count())
+    pool.map(replicate_one_database, todos)
+
+
+def replicate_one_database(args):
+    source_url, target_url, db = args
+
+    source = couchdb.Server(source_url)
+    target = couchdb.Server(target_url)
+
     source_host = (urlparse(source_url).netloc
                    .rsplit('@', 1)[-1].rsplit(':', 1)[0])
     source_is_local = (source_host == 'localhost' or
                        source_host == '127.0.0.1' or source_host == '::1')
 
-    source = couchdb.Server(source_url)
-    target = couchdb.Server(target_url)
+    print('Creating database "%s"' % db)
+    try:
+        target.create(db)
+    except couchdb.http.PreconditionFailed as e:
+        if e.args[0][0] == 'file_exists' and db in ('_users',):
+            pass
+        else:
+            print(db)
+            raise
 
-    all_dbs = list(source)
-    for blacklisted in ('_global_changes', '_metadata', '_replicator'):
-        if blacklisted in all_dbs:
-            all_dbs.remove(blacklisted)
+    print('Replicating database "%s"' % db)
+    server = source if source_is_local else target
+    server.replicate(source_url + '/' + db, target_url + '/' + db)
 
-    for db in all_dbs:
-        print('Creating database "%s"' % db)
-        try:
-            target.create(db)
-        except couchdb.http.PreconditionFailed as e:
-            if e.args[0][0] == 'file_exists' and db in ('_users',):
-                pass
-            else:
-                print(db)
-                raise
+    source_db = couchdb.Database(source_url + '/' + db)
+    target_db = couchdb.Database(target_url + '/' + db)
 
-        print('Replicating database "%s"' % db)
-        server = source if source_is_local else target
-        server.replicate(source_url + '/' + db, target_url + '/' + db)
+    print('Replicating _security for "%s"' % db)
+    target_db.security = source_db.security
 
-        source_db = couchdb.Database(source_url + '/' + db)
-        target_db = couchdb.Database(target_url + '/' + db)
-
-        print('Replicating _security for "%s"' % db)
-        target_db.security = source_db.security
-
-        source_len, target_len = len(source_db), len(target_db)
-        if source_len != target_len:
-            raise Exception(
-                'Replicated database has %d docs, source has %d'
-                % (target_len, source_len))
+    source_len, target_len = len(source_db), len(target_db)
+    if source_len != target_len:
+        raise Exception(
+            'Replicated database has %d docs, source has %d'
+            % (target_len, source_len))
 
 
 def dump(source, filename):
