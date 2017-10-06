@@ -195,7 +195,12 @@ def replicate_one_database(args):
     target_db = couchdb.Database(target_url + '/' + db)
 
     print('Replicating _security for "%s"' % db)
-    target_db.security = source_db.security
+    try:
+        target_db.security = source_db.security
+    except couchdb.http.ServerError as e:
+        if e.args[0][1][1] in ('no_majority', 'no_ring'):
+            print('Retry with a greater ulimit (e.g. `ulimit -n 8192`)')
+        raise
 
     source_len, target_len = len(source_db), len(target_db)
     if source_len != target_len:
