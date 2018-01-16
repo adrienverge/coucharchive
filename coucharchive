@@ -309,7 +309,7 @@ def main():
                       config['database'].get('username', 'root'),
                       config['database'].get('password', ''))
 
-    max_open_files = int(subprocess.check_output(('ulimit', '-n')))
+    max_open_files = int(subprocess.check_output(('sh', '-c', 'ulimit -n')))
     if max_open_files < 4096:
         print(('WARNING: Max number of open files is low (%d), it could\n' +
                'result in server errors. Consider running "ulimit -n 4096".')
