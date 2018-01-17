@@ -168,7 +168,7 @@ def replicate_couchdb_server(source_url, target_url):
 
     todos = [(source_url, target_url, db) for db in all_dbs]
 
-    pool = multiprocessing.Pool(processes=2 * multiprocessing.cpu_count())
+    pool = multiprocessing.Pool(processes=16)
     pool.map(replicate_one_database, todos)
 
 
