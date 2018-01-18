@@ -169,7 +169,16 @@ def replicate_couchdb_server(source_url, target_url):
     todos = [(source_url, target_url, db) for db in all_dbs]
 
     pool = multiprocessing.Pool(processes=16)
-    pool.map(replicate_one_database, todos)
+    try:  # see https://stackoverflow.com/a/25791961
+        list(pool.imap_unordered(replicate_one_database, todos))
+    except Exception as e:
+        print('A replication failed, stopping...')
+        pool.close()
+        pool.terminate()
+        raise
+    else:
+        pool.close()
+        pool.join()
 
 
 def replicate_one_database(args):
