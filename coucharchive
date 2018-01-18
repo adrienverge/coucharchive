@@ -192,7 +192,6 @@ def replicate_one_database(args):
     source_is_local = (source_host == 'localhost' or
                        source_host == '127.0.0.1' or source_host == '::1')
 
-    print('Creating database "%s"' % db)
     try:
         target.create(db)
     except couchdb.http.PreconditionFailed as e:
@@ -202,14 +201,12 @@ def replicate_one_database(args):
             print(db)
             raise
 
-    print('Replicating database "%s"' % db)
     server = source if source_is_local else target
     server.replicate(source_url + '/' + db, target_url + '/' + db)
 
     source_db = couchdb.Database(source_url + '/' + db)
     target_db = couchdb.Database(target_url + '/' + db)
 
-    print('Replicating _security for "%s"' % db)
     try:
         target_db.security = source_db.security
     except couchdb.http.ServerError as e:
@@ -220,8 +217,10 @@ def replicate_one_database(args):
     source_len, target_len = len(source_db), len(target_db)
     if source_len != target_len:
         raise Exception(
-            'Replicated database has %d docs, source has %d'
-            % (target_len, source_len))
+            '%s: replicated database has %d docs, source has %d'
+            % (db, target_len, source_len))
+
+    print('%s: done' % db)
 
 
 def dump(source, filename):
