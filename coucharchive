@@ -183,6 +183,8 @@ def replicate_couchdb_server(source_url, target_url, ignore_dbs=[]):
 
 
 def replicate_one_database(args):
+    timeout = 3
+
     source_url, target_url, db = args
 
     source = couchdb.Server(source_url)
@@ -208,18 +210,29 @@ def replicate_one_database(args):
     source_db = couchdb.Database(source_url + '/' + db)
     target_db = couchdb.Database(target_url + '/' + db)
 
-    try:
-        target_db.security = source_db.security
-    except couchdb.http.ServerError as e:
-        if e.args[0][1][1] in ('no_majority', 'no_ring'):
-            print('Retry with a greater ulimit (e.g. `ulimit -n 8192`)')
-        raise
+    while True:
+        try:
+            target_db.security = source_db.security
+            break
+        except couchdb.http.ServerError as e:
+            if timeout == 0:
+                if e.args[0][1][1] in ('no_majority', 'no_ring'):
+                    print('Retry with a greater ulimit '
+                          '(e.g. `ulimit -n 8192`)')
+                raise
+            time.sleep(1)
+            timeout =- 1
 
-    source_len, target_len = len(source_db), len(target_db)
-    if source_len != target_len:
-        raise Exception(
-            '%s: replicated database has %d docs, source has %d'
-            % (db, target_len, source_len))
+    while True:
+        source_len, target_len = len(source_db), len(target_db)
+        if source_len == target_len:
+            break
+        elif timeout == 0:
+            raise Exception(
+                '%s: replicated database has %d docs, source has %d'
+                % (db, target_len, source_len))
+        time.sleep(1)
+        timeout =- 1
 
     print('%s: done' % db)
 
