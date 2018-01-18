@@ -6,7 +6,7 @@ from setuptools import setup
 
 setup(
     name='coucharchive',
-    version='1.2.4',
+    version='1.3.0',
     author='Adrien Vergé',
     url='https://github.com/adrienverge/coucharchive',
     license='MIT',
