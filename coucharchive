@@ -221,7 +221,7 @@ def replicate_one_database(args):
                           '(e.g. `ulimit -n 8192`)')
                 raise
             time.sleep(1)
-            timeout =- 1
+            timeout -= 1
 
     while True:
         source_len, target_len = len(source_db), len(target_db)
@@ -232,7 +232,7 @@ def replicate_one_database(args):
                 '%s: replicated database has %d docs, source has %d'
                 % (db, target_len, source_len))
         time.sleep(1)
-        timeout =- 1
+        timeout -= 1
 
     print('%s: done' % db)
 
