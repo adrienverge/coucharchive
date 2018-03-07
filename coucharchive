@@ -4,18 +4,23 @@
 # All rights reserved
 
 import argparse
+import base64
 import configparser
 from datetime import datetime
 import fileinput
+import getpass
 from io import BytesIO
+import json
 import multiprocessing
 import os
 import random
 import re
+import resource
 import shutil
 import socket
 import string
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -24,6 +29,48 @@ from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 import urllib.request
 
 import couchdb
+
+
+def _check_couchdb_connection(url):
+    url = url if url.startswith('http://') else 'http://' + url
+
+    parts = list(urlsplit(url))
+    server = parts[1]
+    username, password = None, None
+    if '@' in server:
+        credentials, server = server.rsplit('@', 1)
+        credentials = credentials.split(':', 1)
+        username = credentials.pop(0)
+        password = credentials.pop(0) if credentials else None
+    while not username:
+        print('CouchDB admin for %s: ' % server, end='', file=sys.stderr)
+        username = input()
+    while not password:
+        password = getpass.getpass(
+            'CouchDB password for %s@%s: ' % (username, server), sys.stderr)
+
+    parts[1] = server
+    url = urlunsplit(parts)       # http://server/db/
+    parts[1] = '%s:%s@%s' % (quote(username, safe=[]),
+                             quote(password, safe=[]),
+                             server)
+    auth_url = urlunsplit(parts)  # http://user:pass@server/db/
+
+    # Check connection
+    auth = base64.b64encode(('%s:%s' % (username, password))
+                            .encode('utf-8')).decode('utf-8')
+    req = urllib.request.Request(url, headers={
+        'Authorization': 'Basic %s' % auth})
+    try:
+        response = urllib.request.urlopen(req)
+        data = json.loads(response.read().decode('utf-8'))
+        assert 'couchdb' in data and data['couchdb'] == 'Welcome', data
+    except Exception as e:
+        print('Cannot connect to CouchDB server %s:\n%s' % (server, e),
+              file=sys.stderr)
+        sys.exit(1)
+
+    return auth_url
 
 
 class CouchDBInstance(object):
@@ -67,7 +114,26 @@ class CouchDBInstance(object):
         s2.close()
         return port1, port2
 
+    def _try_to_increase_rlimit_nofile(self):
+        MAX_NOFILE = 4096
+        # Try to increase the allowed number of open files, to avoid CouchDB
+        # errors:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < MAX_NOFILE and soft < hard:
+            print('Trying to increase the max number of open files '
+                  '(currently %d)...' % soft, file=sys.stderr)
+            resource.setrlimit(resource.RLIMIT_NOFILE,
+                               (min(MAX_NOFILE, hard), hard))
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < MAX_NOFILE:
+            print(('WARNING: Max number of open files is low (%d), it could '
+                   'result in server errors. If you have errors, consider '
+                   'increasing the system hard limit.') % soft,
+                  file=sys.stderr)
+
     def _setup(self):
+        self._try_to_increase_rlimit_nofile()
+
         os.mkdir(self.confdir)
         os.mkdir(self.confdir + '/local.d')
         os.mkdir(self.datadir)
@@ -151,7 +217,7 @@ class CouchDBInstance(object):
         raise Exception('CouchDB server does not answer after 5 seconds')
 
     def stop(self):
-        print('Terminating local CouchDB instance')
+        print('Terminating local CouchDB instance', file=sys.stderr)
         self.thread.terminate()
         self.thread.join()
         self.thread = None
@@ -173,7 +239,7 @@ def replicate_couchdb_server(source_url, target_url, ignore_dbs=[]):
     try:  # see https://stackoverflow.com/a/25791961
         list(pool.imap_unordered(replicate_one_database, todos))
     except Exception as e:
-        print('A replication failed, stopping...')
+        print('A replication failed, stopping...', file=sys.stderr)
         pool.close()
         pool.terminate()
         raise
@@ -192,8 +258,7 @@ def replicate_one_database(args):
 
     source_host = (urlparse(source_url).netloc
                    .rsplit('@', 1)[-1].rsplit(':', 1)[0])
-    source_is_local = (source_host == 'localhost' or
-                       source_host == '127.0.0.1' or source_host == '::1')
+    source_is_local = source_host in ('localhost', '127.0.0.1', '::1')
 
     try:
         target.create(db)
@@ -218,7 +283,7 @@ def replicate_one_database(args):
             if timeout == 0:
                 if e.args[0][1][1] in ('no_majority', 'no_ring'):
                     print('Retry with a greater ulimit '
-                          '(e.g. `ulimit -n 8192`)')
+                          '(e.g. `ulimit -n 8192`)', file=sys.stderr)
                 raise
             time.sleep(1)
             timeout -= 1
@@ -237,20 +302,21 @@ def replicate_one_database(args):
     print('%s: done' % db)
 
 
-def dump(source, filename, ignore_dbs=[]):
+def create(source, filename, ignore_dbs=[]):
     erlang_node = 'coucharchive-%s@localhost' % ''.join(
         random.choice(string.ascii_letters + string.digits) for _ in range(10))
 
     with CouchDBInstance(erlang_node) as local_couchdb:
         local_couchdb.start()
-        print('Launched CouchDB instance at %s' % local_couchdb.url)
+        print('Launched CouchDB instance at %s' % local_couchdb.url,
+              file=sys.stderr)
 
         replicate_couchdb_server(source, local_couchdb.url,
                                  ignore_dbs=ignore_dbs)
 
         local_couchdb.stop()
 
-        print('Creating backup archive at %s' % filename)
+        print('Creating backup archive at %s' % filename, file=sys.stderr)
         with tarfile.open(filename, 'w:gz') as tar:
             tar.add(local_couchdb.confdir, arcname='etc')
             tar.add(local_couchdb.datadir, arcname='data')
@@ -268,13 +334,13 @@ def dump(source, filename, ignore_dbs=[]):
             tar.addfile(file, BytesIO(info))
 
 
-def load(target, filename, standalone_server=False, ignore_dbs=[]):
+def _load_archive(filename, callback):
     if not os.path.isfile(filename):
         raise Exception('File "%s" does not exist' % filename)
 
     with tarfile.open(filename) as tar, \
             tempfile.TemporaryDirectory(prefix='coucharchive-') as tmp:
-        print('Extracting backup archive from %s' % filename)
+        print('Extracting backup archive from %s' % filename, file=sys.stderr)
         tar.extractall(path=tmp)
 
         if os.path.isfile(tmp + '/erlang_node_name'):
@@ -288,76 +354,108 @@ def load(target, filename, standalone_server=False, ignore_dbs=[]):
             os.rename(tmp + '/data', local_couchdb.datadir)
 
             local_couchdb.start()
-            print('Launched CouchDB instance at %s' % local_couchdb.url)
+            print('Launched CouchDB instance at %s' % local_couchdb.url,
+                  file=sys.stderr)
 
-            if standalone_server:
-                try:
-                    time.sleep(365 * 24 * 3600)
-                except KeyboardInterrupt:
-                    pass
-            else:
-                replicate_couchdb_server(local_couchdb.url, target,
-                                         ignore_dbs=ignore_dbs)
+            callback(local_couchdb.url)
 
 
-def couchdb_url(url, username, password):
-    parts = list(urlsplit(url))
-    parts[1] = '%s:%s@%s' % (quote(username, safe=[]),
-                             quote(password, safe=[]),
-                             parts[1])
-    return urlunsplit(parts)  # http://user:pass@server/db/
+def load(filename):
+    def callback(local_couch_server_url):
+        print('Ready!', file=sys.stderr)
+        try:
+            time.sleep(365 * 24 * 3600)
+        except KeyboardInterrupt:
+            pass
+
+    _load_archive(filename, callback)
+
+
+def restore(target, filename, ignore_dbs=[]):
+    def callback(local_couch_server_url):
+        replicate_couchdb_server(local_couch_server_url,
+                                 target, ignore_dbs=ignore_dbs)
+
+    _load_archive(filename, callback)
 
 
 def main():
     # Get action and archive file from command line
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', dest='config_file', required=True,
+    parser.add_argument('-c', '--config', dest='config_file',
                         action='store', help='path to config file')
     subparsers = parser.add_subparsers(dest='action')
-    dump_parser = subparsers.add_parser('dump')
-    dump_parser.add_argument('-o', '--output-file', dest='output_file',
-                             required=True, action='store',
-                             help='path to archive to create')
-    load_parser = subparsers.add_parser('load')
-    load_parser.add_argument('-i', '--input-file', dest='input_file',
-                             required=True, action='store',
-                             help='path to archive to read')
-    load_parser.add_argument('--standalone-server', action='store_true',
-                             help='load archive in a standalone CouchDB '
-                                  'server but do not replicate')
-    load_parser = subparsers.add_parser('replicate')
-    load_parser.add_argument('--source', dest='source', required=True,
-                             action='store',
-                             help='source CouchDB server to replicate')
+    sub = {}
+
+    sub['create'] = subparsers.add_parser('create')
+    sub['create'].add_argument(
+        '--from', dest='source_server', action='store',
+        help='source CouchDB server to create archive from')
+    sub['create'].add_argument(
+        '-o', '--output', dest='output', action='store', required=True,
+        help='path to archive to create')
+
+    sub['restore'] = subparsers.add_parser('restore')
+    sub['restore'].add_argument(
+        '--to', dest='target_server', action='store',
+        help='target CouchDB server to restore archive to')
+    sub['restore'].add_argument(
+        '-i', '--input', dest='input', action='store', required=True,
+        help='path to archive to restore')
+
+    sub['load'] = subparsers.add_parser('load')
+    sub['load'].add_argument(
+        '-i', '--input', dest='input', action='store', required=True,
+        help='path to archive to load')
+
+    sub['replicate'] = subparsers.add_parser('replicate')
+    sub['replicate'].add_argument(
+        '--from', dest='source_server', action='store',
+        help='source CouchDB server to replicate from')
+    sub['replicate'].add_argument(
+        '--to', dest='target_server', action='store',
+        help='target CouchDB server to replicate to')
+
     args = parser.parse_args()
 
-    # Get database server info using the config file
     config = configparser.ConfigParser()
-    config.read(args.config_file)
-    url = couchdb_url(config['database']['url'],
-                      config['database'].get('username', 'root'),
-                      config['database'].get('password', ''))
+    if args.config_file:
+        config.read(args.config_file)
+
+    if args.action in ('create', 'replicate'):
+        if not args.source_server and 'source' in config.sections():
+            args.source_server = config['source'].get('url', '')
+        if not args.source_server:
+            sub[args.action].print_help()
+            parser.exit(1)
+    if args.action in ('restore', 'replicate'):
+        if not args.target_server and 'target' in config.sections():
+            args.target_server = config['target'].get('url', '')
+        if not args.target_server:
+            sub[args.action].print_help()
+            parser.exit(1)
 
     ignore_dbs = []
     if 'replication' in config.sections():
         ignore_dbs = config['replication'].get('ignore_dbs', '').split(',')
         ignore_dbs = [db.strip() for db in ignore_dbs if db.strip()]
 
-    max_open_files = int(subprocess.check_output(('sh', '-c', 'ulimit -n')))
-    if max_open_files < 4096:
-        print(('WARNING: Max number of open files is low (%d), it could\n' +
-               'result in server errors. Consider running "ulimit -n 4096".')
-              % max_open_files)
+    if getattr(args, 'source_server', None):
+        args.source_server = _check_couchdb_connection(args.source_server)
+    if getattr(args, 'target_server', None):
+        args.target_server = _check_couchdb_connection(args.target_server)
 
-    if args.action == 'dump':
-        dump(url, args.output_file, ignore_dbs=ignore_dbs)
+    if args.action == 'create':
+        create(args.source_server, args.output, ignore_dbs=ignore_dbs)
+    elif args.action == 'restore':
+        restore(args.target_server, args.input, ignore_dbs=ignore_dbs)
     elif args.action == 'load':
-        load(url, args.input_file, args.standalone_server,
-             ignore_dbs=ignore_dbs)
+        load(args.input)
     elif args.action == 'replicate':
-        replicate_couchdb_server(args.source, url, ignore_dbs=ignore_dbs)
+        replicate_couchdb_server(args.source_server, args.target_server,
+                                 ignore_dbs=ignore_dbs)
     else:
-        parser.print_usage()
+        parser.print_help()
         parser.exit(1)
 
 
