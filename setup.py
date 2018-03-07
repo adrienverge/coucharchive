@@ -6,12 +6,12 @@ from setuptools import setup
 
 setup(
     name='coucharchive',
-    version='1.3.0',
+    version='2.0.0',
     author='Adrien Vergé',
     url='https://github.com/adrienverge/coucharchive',
     license='MIT',
-    description=('Dump/restore a whole CouchDB server contents to/from a '
-                 'single tar.gz file.'),
+    description=('Create and restore backups of a whole CouchDB server, with '
+                 'simple tar.gz files.'),
 
     scripts=['coucharchive'],
     install_requires=[
