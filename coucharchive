@@ -249,7 +249,7 @@ def replicate_couchdb_server(source_url, target_url, ignore_dbs=[]):
 
 
 def replicate_one_database(args):
-    timeout = 3
+    timeout = 10
 
     source_url, target_url, db = args
 
