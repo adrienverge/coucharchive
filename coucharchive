@@ -279,6 +279,11 @@ def replicate_one_database(args):
         try:
             target_db.security = source_db.security
             break
+        except socket.gaierror as e:
+            if timeout == 0:
+                raise e
+            time.sleep(1)
+            timeout -= 1
         except couchdb.http.ServerError as e:
             if timeout == 0:
                 if e.args[0][1][1] in ('no_majority', 'no_ring'):
