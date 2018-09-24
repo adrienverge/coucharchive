@@ -161,6 +161,7 @@ class CouchDBInstance(object):
                     'database_dir = %s\n' % self.datadir +
                     'view_index_dir = %s\n' % self.datadir +
                     'max_dbs_open = 2000\n'
+                    'update_lru_on_read = false\n'
                     '\n'
                     '[cluster]\n'
                     'q=1\n'  # ideal for a small, 1-node setup
