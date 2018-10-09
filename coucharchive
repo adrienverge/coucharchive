@@ -249,7 +249,7 @@ def replicate_couchdb_server(source_url, target_url, ignore_dbs=[]):
 
 
 def replicate_one_database(args):
-    timeout = 10
+    retries = 10
 
     source_url, target_url, db = args
 
@@ -280,29 +280,29 @@ def replicate_one_database(args):
             target_db.security = source_db.security
             break
         except socket.gaierror as e:
-            if timeout == 0:
+            if retries == 0:
                 raise e
             time.sleep(1)
-            timeout -= 1
+            retries -= 1
         except couchdb.http.ServerError as e:
-            if timeout == 0:
+            if retries == 0:
                 if e.args[0][1][1] in ('no_majority', 'no_ring'):
                     print('Retry with a greater ulimit '
                           '(e.g. `ulimit -n 8192`)', file=sys.stderr)
                 raise
             time.sleep(1)
-            timeout -= 1
+            retries -= 1
 
     while True:
         source_len, target_len = len(source_db), len(target_db)
         if source_len == target_len:
             break
-        elif timeout == 0:
+        elif retries == 0:
             raise Exception(
                 '%s: replicated database has %d docs, source has %d'
                 % (db, target_len, source_len))
         time.sleep(1)
-        timeout -= 1
+        retries -= 1
 
     print('%s: done' % db)
 
