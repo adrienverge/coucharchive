@@ -256,7 +256,8 @@ def make_throttler_faster():
         throttler.delay /= 2 ** (1.0 / NUMBER_OF_WORKERS)
 
 
-def replicate_couchdb_server(source_url, target_url, ignore_dbs=[]):
+def replicate_couchdb_server(source_url, target_url,
+                             reuse_db_if_exist=False, ignore_dbs=[]):
     while source_url.endswith('/'):
         source_url = source_url[:-1]
     while target_url.endswith('/'):
@@ -266,7 +267,7 @@ def replicate_couchdb_server(source_url, target_url, ignore_dbs=[]):
     all_dbs = [db for db in list(couchdb.Server(source_url))
                if db not in ignore_dbs]
 
-    todos = [(source_url, target_url, db) for db in all_dbs]
+    todos = [(source_url, target_url, db, reuse_db_if_exist) for db in all_dbs]
 
     pool = multiprocessing.Pool(processes=NUMBER_OF_WORKERS)
     try:  # see https://stackoverflow.com/a/25791961
@@ -286,7 +287,7 @@ def replicate_one_database(args):
 
     retries = 10
 
-    source_url, target_url, db = args
+    source_url, target_url, db, reuse_db_if_exist = args
 
     source = couchdb.Server(source_url)
     target = couchdb.Server(target_url)
@@ -299,6 +300,8 @@ def replicate_one_database(args):
         target.create(db)
     except couchdb.http.PreconditionFailed as e:
         if e.args[0][0] == 'file_exists' and db in ('_users',):
+            pass
+        elif e.args[0][0] == 'file_exists' and reuse_db_if_exist:
             pass
         else:
             print(db)
@@ -416,10 +419,11 @@ def load(filename):
     _load_archive(filename, callback)
 
 
-def restore(target, filename, ignore_dbs=[]):
+def restore(target, filename, reuse_db_if_exist=False, ignore_dbs=[]):
     def callback(local_couch_server_url):
-        replicate_couchdb_server(local_couch_server_url,
-                                 target, ignore_dbs=ignore_dbs)
+        replicate_couchdb_server(local_couch_server_url, target,
+                                 reuse_db_if_exist=reuse_db_if_exist,
+                                 ignore_dbs=ignore_dbs)
 
     _load_archive(filename, callback)
 
@@ -447,6 +451,10 @@ def main():
     sub['restore'].add_argument(
         '-i', '--input', dest='input', action='store', required=True,
         help='path to archive to restore')
+    sub['restore'].add_argument(
+        '--reuse-db-if-exist', dest='reuse_db_if_exist',
+        action='store_true', default=False,
+        help='continue restoration even if database exists on target')
 
     sub['load'] = subparsers.add_parser('load')
     sub['load'].add_argument(
@@ -460,6 +468,10 @@ def main():
     sub['replicate'].add_argument(
         '--to', dest='target_server', action='store',
         help='target CouchDB server to replicate to')
+    sub['replicate'].add_argument(
+        '--reuse-db-if-exist', dest='reuse_db_if_exist',
+        action='store_true', default=False,
+        help='continue replication even if database exists on target')
 
     args = parser.parse_args()
 
@@ -493,11 +505,14 @@ def main():
     if args.action == 'create':
         create(args.source_server, args.output, ignore_dbs=ignore_dbs)
     elif args.action == 'restore':
-        restore(args.target_server, args.input, ignore_dbs=ignore_dbs)
+        restore(args.target_server, args.input,
+                reuse_db_if_exist=args.reuse_db_if_exist,
+                ignore_dbs=ignore_dbs)
     elif args.action == 'load':
         load(args.input)
     elif args.action == 'replicate':
         replicate_couchdb_server(args.source_server, args.target_server,
+                                 reuse_db_if_exist=args.reuse_db_if_exist,
                                  ignore_dbs=ignore_dbs)
     else:
         parser.print_help()
