@@ -282,6 +282,32 @@ def replicate_couchdb_server(source_url, target_url,
         pool.join()
 
 
+def bug_1418_create_missing_documents(source_db, target_db):
+    # Temporary function to be deleted when CouchDB team fixes the bug.
+    # It manually creates document on the target database that where
+    # previously deleted and re-created on the source.
+
+    missing_documents = [doc for doc in source_db if doc not in target_db]
+
+    for doc_id in missing_documents:
+        source_doc = source_db[doc_id]
+        source_doc_rev = source_doc['_rev']
+
+        # Not needed. Will be generated on target.
+        # Plus avoids conflicts.
+        del source_doc['_rev']
+
+        _, target_rev = target_db.save(source_doc)
+
+        if target_rev != source_doc_rev:
+            source_doc['_rev'] = target_rev
+            target_db.delete(source_doc)
+
+            raise Exception('bug_1418_create_missing_documents: '
+                            '%s: source and target documents have diverged'
+                            % source_db.name)
+
+
 def replicate_one_database(args):
     time.sleep(get_throttler_delay())
 
@@ -337,6 +363,9 @@ def replicate_one_database(args):
         source_len, target_len = len(source_db), len(target_db)
         if source_len == target_len:
             break
+        elif source_len > target_len:
+            # Overcome bug https://github.com/apache/couchdb/issues/1418
+            bug_1418_create_missing_documents(source_db, target_db)
         elif retries == 0:
             raise Exception(
                 '%s: replicated database has %d docs, source has %d'
