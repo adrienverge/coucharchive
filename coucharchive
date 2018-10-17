@@ -304,8 +304,8 @@ def bug_1418_create_missing_documents(source_db, target_db):
             target_db.delete(source_doc)
 
             raise Exception('bug_1418_create_missing_documents: '
-                            '%s: source and target documents have diverged'
-                            % source_db.name)
+                            '%s/%s: source and target documents have diverged'
+                            % (source_db.name, doc_id))
 
 
 def replicate_one_database(args):
