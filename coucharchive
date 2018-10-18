@@ -286,26 +286,60 @@ def bug_1418_create_missing_documents(source_db, target_db):
     # Temporary function to be deleted when CouchDB team fixes the bug.
     # It manually creates document on the target database that where
     # previously deleted and re-created on the source.
+    #
+    # If the bug #1418 occured for a document, the situation should be as
+    # followed: on target, doc is deleted (its last revision is a tombstone
+    # with `_deleted: true`). On source, this tombstone revision is followed by
+    # one or more non-tombstone revisions.
+    #
+    #                      tombstone rev
+    #       first rev     (last common ancestor)     latest rev on source
+    #          ↘               ↓                    ↙
+    # SOURCE    o----o----o----o----o----o----o----o
+    # TARGET    o----o----o----o
+    #                           ↖
+    #                            tombstone rev (latest rev on target)
 
     missing_documents = [doc for doc in source_db if doc not in target_db]
 
     for doc_id in missing_documents:
-        source_doc = source_db[doc_id]
-        source_doc_rev = source_doc['_rev']
+        source_info = source_db.get(doc_id, revs_info=True)['_revs_info']
+        target_doc = target_db.get(doc_id, revs=True, open_revs='all')[0]['ok']
+        if not target_doc['_deleted']:
+            continue  # not bug #1418
+        common_ancestor = target_doc['_rev']  # e.g. '6-0ebc2b61b51eb4ed'
+        if common_ancestor not in [i['rev'] for i in source_info]:
+            continue  # not bug #1418
 
-        # Not needed. Will be generated on target.
-        # Plus avoids conflicts.
-        del source_doc['_rev']
+        # e.g. ['7-f031bf11190de325', '8-a50a40b72aaea825']
+        revisions_to_catch_up = []
+        for info in source_info:
+            if info['rev'] == common_ancestor:
+                break
+            if info['status'] not in ('available', 'deleted'):
+                raise Exception('bug_1418_create_missing_documents: a source '
+                                'rev is not available anymore! '
+                                '%s/%s, source %s target %s'
+                                % (source_db.name, doc_id, info['rev'],
+                                   common_ancestor))
+            revisions_to_catch_up.insert(0, info['rev'])
 
-        _, target_rev = target_db.save(source_doc)
-
-        if target_rev != source_doc_rev:
-            source_doc['_rev'] = target_rev
-            target_db.delete(source_doc)
-
-            raise Exception('bug_1418_create_missing_documents: '
-                            '%s/%s: source and target documents have diverged'
-                            % (source_db.name, doc_id))
+        prev_target_rev = None
+        for rev in revisions_to_catch_up:
+            doc = source_db.get(doc_id, rev=rev)
+            if prev_target_rev:
+                doc['_rev'] = prev_target_rev
+            else:
+                del doc['_rev']
+            _, target_rev = target_db.save(doc)
+            if target_rev != rev:
+                raise Exception('bug_1418_create_missing_documents: bug in the'
+                                'bug-solving code! %s/%s, source %s target %s'
+                                % (source_db.name, doc_id, rev, target_rev))
+            if doc.get('_deleted', False):
+                prev_target_rev = None
+            else:
+                prev_target_rev = rev
 
 
 def replicate_one_database(args):
@@ -366,7 +400,7 @@ def replicate_one_database(args):
         elif source_len > target_len:
             # Overcome bug https://github.com/apache/couchdb/issues/1418
             bug_1418_create_missing_documents(source_db, target_db)
-        elif retries == 0:
+        if retries == 0:
             raise Exception(
                 '%s: replicated database has %d docs, source has %d'
                 % (db, target_len, source_len))
