@@ -394,12 +394,16 @@ def replicate_one_database(args):
             retries -= 1
 
     while True:
-        source_len, target_len = len(source_db), len(target_db)
-        if source_len == target_len:
-            break
-        elif source_len > target_len:
-            # Overcome bug https://github.com/apache/couchdb/issues/1418
-            bug_1418_create_missing_documents(source_db, target_db)
+        try:
+            source_len, target_len = len(source_db), len(target_db)
+            if source_len == target_len:
+                break
+            elif source_len > target_len:
+                # Overcome bug https://github.com/apache/couchdb/issues/1418
+                bug_1418_create_missing_documents(source_db, target_db)
+        except couchdb.http.ServerError as e:
+            pass
+
         if retries == 0:
             raise Exception(
                 '%s: replicated database has %d docs, source has %d'
