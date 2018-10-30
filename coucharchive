@@ -304,7 +304,10 @@ def bug_1418_create_missing_documents(source_db, target_db):
 
     for doc_id in missing_documents:
         source_info = source_db.get(doc_id, revs_info=True)['_revs_info']
-        target_doc = target_db.get(doc_id, revs=True, open_revs='all')[0]['ok']
+        target_doc = target_db.get(doc_id, revs=True, open_revs='all')
+        if not target_doc:
+            continue  # not bug #1418
+        target_doc = target_doc[0]['ok']
         if not target_doc['_deleted']:
             continue  # not bug #1418
         common_ancestor = target_doc['_rev']  # e.g. '6-0ebc2b61b51eb4ed'
@@ -393,6 +396,9 @@ def replicate_one_database(args):
             time.sleep(get_throttler_delay())
             retries -= 1
 
+    # Check if source and target have the same number of documents. If not, it
+    # can be explained by two reasons: source db had a new document created
+    # during replication, or bug #1418 happened.
     while True:
         try:
             source_len, target_len = len(source_db), len(target_db)
@@ -401,6 +407,7 @@ def replicate_one_database(args):
             elif source_len > target_len:
                 # Overcome bug https://github.com/apache/couchdb/issues/1418
                 bug_1418_create_missing_documents(source_db, target_db)
+                server.replicate(source_url + '/' + db, target_url + '/' + db)
         except couchdb.http.ServerError as e:
             pass
 
