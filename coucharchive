@@ -174,7 +174,7 @@ class CouchDBInstance(object):
 
     def start(self):
         env = dict(os.environ,
-                   COUCHDB_VM_ARGS=self.confdir + '/vm.args',
+                   COUCHDB_ARGS_FILE=self.confdir + '/vm.args',
                    COUCHDB_INI_FILES=(self.confdir + '/default.ini ' +
                                       self.confdir + '/local.ini ' +
                                       self.confdir + '/local.d'))
