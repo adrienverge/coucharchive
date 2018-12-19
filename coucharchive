@@ -169,6 +169,9 @@ class CouchDBInstance(object):
                     'q=1\n'  # ideal for a small, 1-node setup
                     'n=1\n'
                     '\n'
+                    '[replicator]\n'
+                    'use_checkpoints = false\n'  # only one-shot replications
+                    '\n'
                     '[admins]\n'
                     '%s = %s\n' % self.creds)
 
