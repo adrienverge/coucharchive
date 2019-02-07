@@ -172,6 +172,7 @@ class CouchDBInstance(object):
                     '[replicator]\n'
                     'use_checkpoints = false\n'  # only one-shot replications
                     'connection_timeout = 120000\n'  # avoid req_timedout
+                    'worker_processes = 1\n'
                     '\n'
                     '[admins]\n'
                     '%s = %s\n' % self.creds)
