@@ -468,7 +468,15 @@ def _load_archive(filename, callback):
     with tarfile.open(filename) as tar, \
             tempfile.TemporaryDirectory(prefix='coucharchive-') as tmp:
         print('Extracting backup archive from %s' % filename, file=sys.stderr)
-        tar.extractall(path=tmp)
+        try:
+            tar.extractall(path=tmp)
+        except OSError as e:
+            if e.args[0] == 28:
+                print('Exception catched: OSError: ' + str(e), file=sys.stderr)
+                print('Try to increase the size of your `/tmp` folder',
+                      file=sys.stderr)
+                exit(1)
+            raise
 
         if os.path.isfile(tmp + '/erlang_node_name'):
             with open(tmp + '/erlang_node_name', 'r') as f:
