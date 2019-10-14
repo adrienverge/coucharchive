@@ -15,6 +15,6 @@ setup(
 
     scripts=['coucharchive'],
     install_requires=[
-        'CouchDB >=1.0.1',
+        'CouchDB >=1.2.0',
     ],
 )
