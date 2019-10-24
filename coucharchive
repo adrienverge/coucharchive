@@ -34,7 +34,7 @@ import couchdb
 NUMBER_OF_WORKERS = 64
 
 
-def _check_couchdb_connection(url):
+def _canonical_couchdb_url(url):
     url = url if url.startswith('http://') else 'http://' + url
 
     parts = list(urlsplit(url))
@@ -58,22 +58,30 @@ def _check_couchdb_connection(url):
                              quote(password, safe=[]),
                              server)
     auth_url = urlunsplit(parts)  # http://user:pass@server/db/
+    return auth_url
 
-    # Check connection
+
+def _couchdb_request(url):
+    parts = list(urlsplit(url))
+    credentials, server = parts[1].rsplit('@', 1)
+    username, password = credentials.split(':', 1)
     auth = base64.b64encode(('%s:%s' % (username, password))
                             .encode('utf-8')).decode('utf-8')
-    req = urllib.request.Request(url, headers={
-        'Authorization': 'Basic %s' % auth})
+    parts[1] = server
+    url = urlunsplit(parts)
+    req = urllib.request.Request(url,
+                                 headers={'Authorization': 'Basic %s' % auth})
+    response = urllib.request.urlopen(req)
+    return json.loads(response.read().decode('utf-8'))
+
+
+def _check_couchdb_connection(url):
     try:
-        response = urllib.request.urlopen(req)
-        data = json.loads(response.read().decode('utf-8'))
+        data = _couchdb_request(url)
         assert 'couchdb' in data and data['couchdb'] == 'Welcome', data
     except Exception as e:
-        print('Cannot connect to CouchDB server %s:\n%s' % (server, e),
-              file=sys.stderr)
+        print('Cannot connect to CouchDB server: %s' % e, file=sys.stderr)
         sys.exit(1)
-
-    return auth_url
 
 
 class CouchDBInstance(object):
@@ -577,9 +585,11 @@ def main():
         ignore_dbs = [db.strip() for db in ignore_dbs if db.strip()]
 
     if getattr(args, 'source_server', None):
-        args.source_server = _check_couchdb_connection(args.source_server)
+        args.source_server = _canonical_couchdb_url(args.source_server)
+        _check_couchdb_connection(args.source_server)
     if getattr(args, 'target_server', None):
-        args.target_server = _check_couchdb_connection(args.target_server)
+        args.target_server = _canonical_couchdb_url(args.target_server)
+        _check_couchdb_connection(args.target_server)
 
     if args.action == 'create':
         create(args.source_server, args.output, ignore_dbs=ignore_dbs)
