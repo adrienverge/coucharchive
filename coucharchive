@@ -11,6 +11,7 @@ import fileinput
 import getpass
 from io import BytesIO
 import json
+import logging
 import multiprocessing
 import os
 import random
@@ -80,7 +81,7 @@ def _check_couchdb_connection(url):
         data = _couchdb_request(url)
         assert 'couchdb' in data and data['couchdb'] == 'Welcome', data
     except Exception as e:
-        print('Cannot connect to CouchDB server: %s' % e, file=sys.stderr)
+        logging.error('Cannot connect to CouchDB server: %s' % e)
         sys.exit(1)
 
 
@@ -131,16 +132,16 @@ class CouchDBInstance(object):
         # errors:
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
         if soft < MAX_NOFILE and soft < hard:
-            print('Trying to increase the max number of open files '
-                  '(currently %d)...' % soft, file=sys.stderr)
+            logging.debug('Trying to increase the max number of open files '
+                          '(currently %d)...' % soft)
             resource.setrlimit(resource.RLIMIT_NOFILE,
                                (min(MAX_NOFILE, hard), hard))
             soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
         if soft < MAX_NOFILE:
-            print(('WARNING: Max number of open files is low (%d), it could '
-                   'result in server errors. If you have errors, consider '
-                   'increasing the system hard limit.') % soft,
-                  file=sys.stderr)
+            logging.warning(
+                ('WARNING: Max number of open files is low (%d), it could '
+                 'result in server errors. If you have errors, consider '
+                 'increasing the system hard limit.') % soft)
 
     def _setup(self):
         self._try_to_increase_rlimit_nofile()
@@ -233,7 +234,7 @@ class CouchDBInstance(object):
         raise Exception('CouchDB server does not answer after 5 seconds')
 
     def stop(self):
-        print('Terminating local CouchDB instance', file=sys.stderr)
+        logging.info('Terminating local CouchDB instance')
         self.thread.terminate()
         self.thread.join()
         self.thread = None
@@ -286,7 +287,7 @@ def replicate_couchdb_server(source_url, target_url,
     try:  # see https://stackoverflow.com/a/25791961
         list(pool.imap_unordered(replicate_one_database, todos))
     except Exception as e:
-        print('A replication failed, stopping...', file=sys.stderr)
+        logging.error('A replication failed, stopping...')
         pool.close()
         pool.terminate()
         raise
@@ -380,7 +381,7 @@ def replicate_one_database(args):
         elif e.args[0][0] == 'file_exists' and reuse_db_if_exist:
             pass
         else:
-            print(db)
+            logging.error('Failed to create database %s' % db)
             raise
 
     server = source if source_is_local else target
@@ -402,8 +403,8 @@ def replicate_one_database(args):
         except couchdb.http.ServerError as e:
             if retries == 0:
                 if e.args[0][1][1] in ('no_majority', 'no_ring'):
-                    print('Retry with a greater ulimit '
-                          '(e.g. `ulimit -n 8192`)', file=sys.stderr)
+                    logging.error('Retry with a greater ulimit (e.g. '
+                                  '`ulimit -n 8192`)')
                 raise
             make_throttler_slower()
             time.sleep(get_throttler_delay())
@@ -432,7 +433,7 @@ def replicate_one_database(args):
         time.sleep(get_throttler_delay())
         retries -= 1
 
-    print('%s: done' % db)
+    logging.info('%s: done' % db)
 
     make_throttler_faster()
 
@@ -443,15 +444,14 @@ def create(source, filename, ignore_dbs=[]):
 
     with CouchDBInstance(erlang_node) as local_couchdb:
         local_couchdb.start()
-        print('Launched CouchDB instance at %s' % local_couchdb.url,
-              file=sys.stderr)
+        logging.info('Launched CouchDB instance at %s' % local_couchdb.url)
 
         replicate_couchdb_server(source, local_couchdb.url,
                                  ignore_dbs=ignore_dbs)
 
         local_couchdb.stop()
 
-        print('Creating backup archive at %s' % filename, file=sys.stderr)
+        logging.info('Creating backup archive at %s' % filename)
         with tarfile.open(filename, 'w:gz') as tar:
             tar.add(local_couchdb.confdir, arcname='etc')
             tar.add(local_couchdb.datadir, arcname='data')
@@ -475,7 +475,7 @@ def _load_archive(filename, callback):
 
     with tarfile.open(filename) as tar, \
             tempfile.TemporaryDirectory(prefix='coucharchive-') as tmp:
-        print('Extracting backup archive from %s' % filename, file=sys.stderr)
+        logging.info('Extracting backup archive from %s' % filename)
         tar.extractall(path=tmp)
 
         if os.path.isfile(tmp + '/erlang_node_name'):
@@ -489,15 +489,14 @@ def _load_archive(filename, callback):
             os.rename(tmp + '/data', local_couchdb.datadir)
 
             local_couchdb.start()
-            print('Launched CouchDB instance at %s' % local_couchdb.url,
-                  file=sys.stderr)
+            logging.info('Launched CouchDB instance at %s' % local_couchdb.url)
 
             callback(local_couchdb.url)
 
 
 def load(filename):
     def callback(local_couch_server_url):
-        print('Ready!', file=sys.stderr)
+        logging.info('Ready!')
         try:
             time.sleep(365 * 24 * 3600)
         except KeyboardInterrupt:
@@ -518,6 +517,10 @@ def restore(target, filename, reuse_db_if_exist=False, ignore_dbs=[]):
 def main():
     # Get action and archive file from command line
     parser = argparse.ArgumentParser()
+    parser.add_argument('-v', '--verbose', action='count',
+                        help='be more verbose (can be used multiple times)')
+    parser.add_argument('-q', '--quiet', action='count',
+                        help='be more quiet (can be used multiple times)')
     parser.add_argument('-c', '--config', dest='config_file',
                         action='store', help='path to config file')
     subparsers = parser.add_subparsers(dest='action')
@@ -561,6 +564,10 @@ def main():
         help='continue replication even if database exists on target')
 
     args = parser.parse_args()
+
+    # https://docs.python.org/fr/3/library/logging.html#levels
+    loglevel = 10 * (2 + (args.quiet or 0) - (args.verbose or 0))
+    logging.basicConfig(format='%(levelname)s: %(message)s', level=loglevel)
 
     config = configparser.ConfigParser()
     if args.config_file:
