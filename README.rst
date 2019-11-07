@@ -50,6 +50,14 @@ Replicate from a CouchDB installation to another one:
  $ coucharchive replicate --from http://root@server.com:5984 \
                           --to http://admin@other-server.com:5984
 
+Slow down replication (to decrease servers load) so that it runs in one hour:
+
+.. code:: bash
+
+ $ coucharchive replicate --from http://root@server.com:5984 \
+                          --to http://admin@other-server.com:5984 \
+                          --ideal-duration 3600
+
 Don't pass credentials on the command line:
 
 .. code:: bash

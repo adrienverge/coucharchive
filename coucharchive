@@ -242,10 +242,16 @@ class CouchDBInstance(object):
 
 
 class ReplicationControl(object):
-    def __init__(self, total_replications):
+    def __init__(self, total_replications, ideal_duration):
         self.total_replications = total_replications
         self.running_replications = multiprocessing.Manager().Value('i', 0)
         self.completed_replications = multiprocessing.Manager().Value('i', 0)
+
+        self.ideal_duration = ideal_duration or 0
+        self._start_time = int(time.time())
+        self.ideal_speed = 0
+        self.current_avge_speed = 0
+
         self._last_successes = multiprocessing.Manager().list()
         self._last_errors = multiprocessing.Manager().list()
 
@@ -268,16 +274,38 @@ class ReplicationControl(object):
         self._drop_old_events()
         return len(self._last_errors)
 
+    def _ideal_number_of_replications_for_ideal_duration(self):
+        if not len(self._last_successes):
+            # We do not have enough data yet to return anything useful.
+            # Start with 4 concurrent replications:
+            return 4
+        else:
+            # Compute the ideal number of concurrent replications, to finish in
+            # ideal_duration:
+            databases_left = (self.total_replications -
+                              self.completed_replications.value)
+            time_left = max(
+                1, self._start_time + self.ideal_duration - time.time())
+            self.ideal_speed = databases_left / time_left
+            self.current_avge_speed = (
+                len(self._last_successes) /
+                min(time.time() - self._start_time, 5 * 60))
+            current_avge_replications = (
+                sum(e[1] for e in self._last_successes) /
+                len(self._last_successes))
+            ideal_number = round(current_avge_replications *
+                                 self.ideal_speed / self.current_avge_speed)
+
+            # But do not increase too rapidly: never go above 2 × the best
+            # known successful value:
+            best_successful_number = max(e[1] for e in self._last_successes)
+            return min(ideal_number, 2 * best_successful_number)
+
     def ideal_number_of_replications(self):
         self._drop_old_events()
 
-        # Start with 4 concurrent replications...
-        ideal_number = 4
-
-        # ... then use 2 × the last successful value
-        if self._last_successes:
-            best_successful_number = max(e[1] for e in self._last_successes)
-            ideal_number = 2 * best_successful_number
+        # Choose the value to achieve replication in ideal_duration:
+        ideal_number = self._ideal_number_of_replications_for_ideal_duration()
 
         # ... but if there were errors, take 0.9 × the lowest error value
         if self._last_errors:
@@ -300,7 +328,9 @@ class ReplicationControl(object):
 
 
 def replicate_couchdb_server(source_url, target_url,
-                             reuse_db_if_exist=False, ignore_dbs=[]):
+                             reuse_db_if_exist=False,
+                             ignore_dbs=[],
+                             ideal_duration=None):
     while source_url.endswith('/'):
         source_url = source_url[:-1]
     while target_url.endswith('/'):
@@ -312,7 +342,7 @@ def replicate_couchdb_server(source_url, target_url,
 
     in_queue = multiprocessing.Queue()
     out_queue = multiprocessing.Queue()
-    control = ReplicationControl(len(dbs))
+    control = ReplicationControl(len(dbs), ideal_duration)
     pool = multiprocessing.Pool(MAX_NUMBER_OF_WORKERS, replicate_databases,
                                 (in_queue, out_queue, control, source_url,
                                  target_url, reuse_db_if_exist))
@@ -326,6 +356,10 @@ def replicate_couchdb_server(source_url, target_url,
 
         logging.debug('Currently running %d replication workers'
                       % control.running_replications.value)
+        logging.debug('Ideal speed = ' + ('%.1f rep/s' % control.ideal_speed
+                                          if ideal_duration else 'fastest') +
+                      '; current average speed = %.1f rep/s' %
+                      control.current_avge_speed)
         n = control.recent_errors()
         if n:
             logging.debug(('There were %d CouchDB errors encountered in the '
@@ -517,7 +551,7 @@ def bug_1418_create_missing_documents(source_db, target_db):
                 prev_target_rev = rev
 
 
-def create(source, filename, ignore_dbs=[]):
+def create(source, filename, ignore_dbs=[], ideal_duration=None):
     erlang_node = 'coucharchive-%s@localhost' % ''.join(
         random.choice(string.ascii_letters + string.digits) for _ in range(10))
 
@@ -526,7 +560,8 @@ def create(source, filename, ignore_dbs=[]):
         logging.info('Launched CouchDB instance at %s' % local_couchdb.url)
 
         replicate_couchdb_server(source, local_couchdb.url,
-                                 ignore_dbs=ignore_dbs)
+                                 ignore_dbs=ignore_dbs,
+                                 ideal_duration=ideal_duration)
 
         local_couchdb.stop()
 
@@ -584,11 +619,13 @@ def load(filename):
     _load_archive(filename, callback)
 
 
-def restore(target, filename, reuse_db_if_exist=False, ignore_dbs=[]):
+def restore(target, filename, reuse_db_if_exist=False, ignore_dbs=[],
+            ideal_duration=None):
     def callback(local_couch_server_url):
         replicate_couchdb_server(local_couch_server_url, target,
                                  reuse_db_if_exist=reuse_db_if_exist,
-                                 ignore_dbs=ignore_dbs)
+                                 ignore_dbs=ignore_dbs,
+                                 ideal_duration=ideal_duration)
 
     _load_archive(filename, callback)
 
@@ -605,6 +642,14 @@ def main():
     subparsers = parser.add_subparsers(dest='action')
     sub = {}
 
+    def check_ideal_duration(value):
+        if value == 'fastest':
+            return 0
+        if value.isdigit() and int(value) >= 0:
+            return int(value)
+        raise argparse.ArgumentTypeError(
+            'must be a positive integer or "fastest"')
+
     sub['create'] = subparsers.add_parser('create')
     sub['create'].add_argument(
         '--from', dest='source_server', action='store',
@@ -612,6 +657,10 @@ def main():
     sub['create'].add_argument(
         '-o', '--output', dest='output', action='store', required=True,
         help='path to archive to create')
+    sub['create'].add_argument(
+        '--ideal-duration', dest='ideal_duration', action='store',
+        help='optimize concurrent replications and server load to finish in N '
+        'seconds', default='fastest', type=check_ideal_duration)
 
     sub['restore'] = subparsers.add_parser('restore')
     sub['restore'].add_argument(
@@ -624,6 +673,10 @@ def main():
         '--reuse-db-if-exist', dest='reuse_db_if_exist',
         action='store_true', default=False,
         help='continue restoration even if database exists on target')
+    sub['restore'].add_argument(
+        '--ideal-duration', dest='ideal_duration', action='store',
+        help='optimize concurrent replications and server load to finish in N '
+        'seconds', default='fastest', type=check_ideal_duration)
 
     sub['load'] = subparsers.add_parser('load')
     sub['load'].add_argument(
@@ -641,6 +694,10 @@ def main():
         '--reuse-db-if-exist', dest='reuse_db_if_exist',
         action='store_true', default=False,
         help='continue replication even if database exists on target')
+    sub['replicate'].add_argument(
+        '--ideal-duration', dest='ideal_duration', action='store',
+        help='optimize concurrent replications and server load to finish in N '
+        'seconds', default='fastest', type=check_ideal_duration)
 
     args = parser.parse_args()
 
@@ -678,17 +735,19 @@ def main():
         _check_couchdb_connection(args.target_server)
 
     if args.action == 'create':
-        create(args.source_server, args.output, ignore_dbs=ignore_dbs)
+        create(args.source_server, args.output, ignore_dbs=ignore_dbs,
+               ideal_duration=args.ideal_duration)
     elif args.action == 'restore':
         restore(args.target_server, args.input,
                 reuse_db_if_exist=args.reuse_db_if_exist,
-                ignore_dbs=ignore_dbs)
+                ignore_dbs=ignore_dbs, ideal_duration=args.ideal_duration)
     elif args.action == 'load':
         load(args.input)
     elif args.action == 'replicate':
         replicate_couchdb_server(args.source_server, args.target_server,
                                  reuse_db_if_exist=args.reuse_db_if_exist,
-                                 ignore_dbs=ignore_dbs)
+                                 ignore_dbs=ignore_dbs,
+                                 ideal_duration=args.ideal_duration)
     else:
         parser.print_help()
         parser.exit(1)
