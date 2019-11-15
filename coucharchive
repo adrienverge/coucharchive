@@ -12,6 +12,7 @@ import getpass
 from io import BytesIO
 import json
 import logging
+import math
 import multiprocessing
 import os
 import queue
@@ -264,11 +265,11 @@ class ReplicationControl(object):
                                   self.running_replications.value))
 
     def _drop_old_events(self):
-        five_min_ago = time.time() - 5 * 60
+        ten_min_ago = time.time() - 10 * 60
         self._last_successes[:] = [e for e in self._last_successes
-                                   if e[0] > five_min_ago]
+                                   if e[0] > ten_min_ago]
         self._last_errors[:] = [e for e in self._last_errors
-                                if e[0] > five_min_ago]
+                                if e[0] > ten_min_ago]
 
     def recent_errors(self):
         self._drop_old_events()
@@ -307,10 +308,35 @@ class ReplicationControl(object):
         # Choose the value to achieve replication in ideal_duration:
         ideal_number = self._ideal_number_of_replications_for_ideal_duration()
 
-        # ... but if there were errors, take 0.9 × the lowest error value
-        if self._last_errors:
-            min_number_with_error = min(e[1] for e in self._last_errors)
-            ideal_number = int(0.9 * min_number_with_error)
+        # ... but if there were errors, compute an age-weighted average
+        # between past errors and ideal_number:
+        #
+        #                      ideal
+        #                      target
+        #       last errors,
+        #       age-weighted   +
+        #                      |
+        #                  +   |          new target = weighted average
+        #                  |   |
+        #           +      |   |
+        #    +    + +      +   +
+        #  ----------------------> t
+        #        10 minutes
+        now = time.time()
+        weights = []
+        weighted_values = []
+        target = [(now, ideal_number)]
+        # Lower last errors values a bit (× 0.9) so we stay just below the
+        # "error zone":
+        last_errors_lowered = [(i[0], i[1] * 0.9) for i in self._last_errors]
+        for i in last_errors_lowered + target:
+            age = now - i[0]
+            # Weight for an old event is 0, weight for a recent event is 1,
+            # between the two it is an exponential curve.
+            weight = math.exp(- age / 120)
+            weights.append(weight)
+            weighted_values.append(weight * i[1])
+        ideal_number = sum(weighted_values) / sum(weights)
 
         # ... and stay within [1, MAX_NUMBER_OF_WORKERS]
         ideal_number = max(1, min(MAX_NUMBER_OF_WORKERS, ideal_number))
