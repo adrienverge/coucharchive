@@ -567,7 +567,9 @@ def main():
 
     # https://docs.python.org/fr/3/library/logging.html#levels
     loglevel = 10 * (2 + (args.quiet or 0) - (args.verbose or 0))
-    logging.basicConfig(format='%(levelname)s: %(message)s', level=loglevel)
+    logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s',
+                        datefmt="%Y-%m-%dT%H:%M:%S%z",
+                        level=loglevel)
 
     config = configparser.ConfigParser()
     if args.config_file:
