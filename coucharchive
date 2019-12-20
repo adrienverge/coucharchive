@@ -14,6 +14,7 @@ import json
 import logging
 import multiprocessing
 import os
+import queue
 import random
 import re
 import resource
@@ -240,34 +241,50 @@ class CouchDBInstance(object):
         self.thread = None
 
 
-# Create a throttler object that can be safely shared between processes
-manager = multiprocessing.Manager()
-throttler = manager.Namespace()
-throttler.lock = manager.Lock()
-throttler.delay = 0
+class ReplicationControl(object):
+    def __init__(self, total_replications):
+        self.total_replications = total_replications
+        self.running_replications = multiprocessing.Value('i', 0)
+        self.completed_replications = multiprocessing.Manager().Value('i', 0)
+        self._last_successes = multiprocessing.Manager().list()
+        self._last_errors = multiprocessing.Manager().list()
+        self.throttler_delay = multiprocessing.Manager().Value('i', 0)
 
+    def report_success(self):
+        self._last_successes.append((int(time.time()),
+                                     self.running_replications.value))
+        self._make_throttler_faster()
 
-def get_throttler_delay():
-    global throttler
-    with throttler.lock:
-        return throttler.delay
+    def report_error(self):
+        self._last_errors.append((int(time.time()),
+                                  self.running_replications.value))
+        self._make_throttler_slower()
 
+    def _drop_old_events(self):
+        five_min_ago = time.time() - 5 * 60
+        self._last_successes[:] = [e for e in self._last_successes
+                                   if e[0] > five_min_ago]
+        self._last_errors[:] = [e for e in self._last_errors
+                                if e[0] > five_min_ago]
 
-def make_throttler_slower():
-    global throttler
-    with throttler.lock:
-        if throttler.delay >= 1:
-            throttler.delay *= 2
+    def recent_errors(self):
+        self._drop_old_events()
+        return len(self._last_errors)
+
+    def get_throttler_delay(self):
+        return self.throttler_delay.value
+
+    def _make_throttler_slower(self):
+        if self.throttler_delay.value >= 1:
+            self.throttler_delay.value *= 2
         else:
-            throttler.delay += 1
-        throttler.delay = min(60, throttler.delay)  # stay within [0, 1 min]
+            self.throttler_delay.value += 1
+        # stay within [0, 1 min]
+        self.throttler_delay.value = min(60, self.throttler_delay.value)
 
-
-def make_throttler_faster():
-    global throttler
-    with throttler.lock:
+    def _make_throttler_faster(self):
         # Value chosen so that NUMBER_OF_WORKERS successes compensate 1 failure
-        throttler.delay /= 2 ** (1.0 / NUMBER_OF_WORKERS)
+        self.throttler_delay.value /= 2 ** (1.0 / NUMBER_OF_WORKERS)
 
 
 def replicate_couchdb_server(source_url, target_url,
@@ -278,37 +295,93 @@ def replicate_couchdb_server(source_url, target_url,
         target_url = target_url[:-1]
 
     ignore_dbs += ('_global_changes', '_metadata', '_replicator')
-    all_dbs = [db for db in list(couchdb.Server(source_url))
-               if db not in ignore_dbs]
+    dbs = [db for db in list(couchdb.Server(source_url))
+           if db not in ignore_dbs]
 
-    todos = [(source_url, target_url, db, reuse_db_if_exist) for db in all_dbs]
+    in_queue = multiprocessing.Queue()
+    out_queue = multiprocessing.Queue()
+    control = ReplicationControl(len(dbs))
+    pool = multiprocessing.Pool(NUMBER_OF_WORKERS, replicate_databases,
+                                (in_queue, out_queue, control, source_url,
+                                 target_url, reuse_db_if_exist))
+    error = None
 
-    pool = multiprocessing.Pool(processes=NUMBER_OF_WORKERS)
-    try:  # see https://stackoverflow.com/a/25791961
-        list(pool.imap_unordered(replicate_one_database, todos))
-    except Exception as e:
-        logging.error('A replication failed, stopping...')
-        pool.close()
-        pool.terminate()
-        raise
-    else:
-        pool.close()
-        pool.join()
+    started_replication = 0
+    while len(dbs) and not error:
+        while len(dbs) and started_replication < NUMBER_OF_WORKERS:
+            in_queue.put(dbs.pop(0))
+            started_replication += 1
+
+        logging.debug('Currently running %d replication workers'
+                      % control.running_replications.value)
+        n = control.recent_errors()
+        if n:
+            logging.debug(('There were %d CouchDB errors encountered in the '
+                           'last 5 minutes') % n)
+
+        time.sleep(1)
+
+        while True:
+            try:
+                result = out_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if result is True:
+                started_replication -= 1
+                with control.running_replications.get_lock():
+                    control.running_replications.value -= 1
+                control.completed_replications.value += 1
+            else:
+                logging.error('A replication failed, stopping...')
+                error = result
+                break
+
+    for i in range(NUMBER_OF_WORKERS):
+        in_queue.put(None)  # message to workers to say "it's over"
+    in_queue.close()
+    pool.close()
+    pool.join()
+
+    if error:
+        raise error
 
 
-def replicate_one_database(args):
-    time.sleep(get_throttler_delay())
-
-    retries = 10
-
-    source_url, target_url, db, reuse_db_if_exist = args
-
+def replicate_databases(in_queue, out_queue, control, source_url, target_url,
+                        reuse_db_if_exist):
+    # Create one TCP connection per worker process:
     source = couchdb.Server(source_url)
     target = couchdb.Server(target_url)
-
     source_host = (urlparse(source_url).netloc
                    .rsplit('@', 1)[-1].rsplit(':', 1)[0])
     source_is_local = source_host in ('localhost', '127.0.0.1', '::1')
+
+    while True:
+        try:
+            item = in_queue.get(True, 1)
+        except queue.Empty:
+            continue
+
+        if item is None:  # message saying "it's over"
+            break
+
+        try:
+            replicate_one_database(control, source, source_url,
+                                   source_is_local, target, target_url,
+                                   reuse_db_if_exist, item)
+            out_queue.put(True)  # message to report success to the parent
+        except Exception as e:
+            out_queue.put(e)  # message to report failure to the parent
+            raise
+
+
+def replicate_one_database(control, source, source_url, source_is_local,
+                           target, target_url, reuse_db_if_exist, db):
+    time.sleep(control.get_throttler_delay())
+    with control.running_replications.get_lock():
+        control.running_replications.value += 1
+
+    retries = 10
 
     try:
         target.create(db)
@@ -334,8 +407,8 @@ def replicate_one_database(args):
         except socket.gaierror as e:
             if retries == 0:
                 raise e
-            make_throttler_slower()
-            time.sleep(get_throttler_delay())
+            control.report_error()
+            time.sleep(control.get_throttler_delay())
             retries -= 1
         except couchdb.http.ServerError as e:
             if retries == 0:
@@ -343,8 +416,8 @@ def replicate_one_database(args):
                     logging.error('Retry with a greater ulimit (e.g. '
                                   '`ulimit -n 8192`)')
                 raise
-            make_throttler_slower()
-            time.sleep(get_throttler_delay())
+            control.report_error()
+            time.sleep(control.get_throttler_delay())
             retries -= 1
 
     # Check if source and target have the same number of documents. If not, it
@@ -359,20 +432,20 @@ def replicate_one_database(args):
                 # Overcome bug https://github.com/apache/couchdb/issues/1418
                 bug_1418_create_missing_documents(source_db, target_db)
                 server.replicate(source_url + '/' + db, target_url + '/' + db)
-        except couchdb.http.ServerError as e:
+        except couchdb.http.ServerError:
             pass
 
         if retries == 0:
             raise Exception(
                 '%s: replicated database has %d docs, source has %d'
                 % (db, target_len, source_len))
-        make_throttler_slower()
-        time.sleep(get_throttler_delay())
+        control.report_error()
+        time.sleep(control.get_throttler_delay())
         retries -= 1
 
     logging.info('%s: done' % db)
 
-    make_throttler_faster()
+    control.report_success()
 
 
 def bug_1418_create_missing_documents(source_db, target_db):
