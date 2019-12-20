@@ -307,6 +307,7 @@ def replicate_couchdb_server(source_url, target_url,
     error = None
 
     started_replication = 0
+    start_time = int(time.time())
     while len(dbs) and not error:
         while len(dbs) and started_replication < NUMBER_OF_WORKERS:
             in_queue.put(dbs.pop(0))
@@ -318,6 +319,12 @@ def replicate_couchdb_server(source_url, target_url,
         if n:
             logging.debug(('There were %d CouchDB errors encountered in the '
                            'last 5 minutes') % n)
+        current_avge_speed = (
+            len(control._last_successes) /
+            min(time.time() - start_time, 5 * 60))
+        logging.debug('Ideal speed = fastest' +
+                      '; current average speed = %.1f rep/s' %
+                      current_avge_speed)
 
         time.sleep(1)
 
