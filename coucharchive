@@ -253,26 +253,43 @@ class ReplicationControl(object):
         self.ideal_speed = 0
         self.current_avge_speed = 0
 
-        self._last_successes = multiprocessing.Manager().list()
-        self._last_errors = multiprocessing.Manager().list()
+        self._last_successes_reported = multiprocessing.Queue()
+        self._last_successes = []
+        self._last_errors_reported = multiprocessing.Queue()
+        self._last_errors = []
 
     def report_success(self):
-        self._last_successes.append((int(time.time()),
-                                     self.running_replications.value))
+        self._last_successes_reported.put((int(time.time()),
+                                           self.running_replications.value))
 
     def report_error(self):
-        self._last_errors.append((int(time.time()),
-                                  self.running_replications.value))
+        self._last_errors_reported.put((int(time.time()),
+                                        self.running_replications.value))
 
-    def _drop_old_events(self):
+    def _clean_and_read_events(self):
+        reported = []
+        while True:
+            try:
+                reported.append(self._last_successes_reported.get_nowait())
+            except queue.Empty:
+                break
+        self._last_successes += reported
+        reported = []
+        while True:
+            try:
+                reported.append(self._last_errors_reported.get_nowait())
+            except queue.Empty:
+                break
+        self._last_errors += reported
+
         ten_min_ago = time.time() - 10 * 60
-        self._last_successes[:] = [e for e in self._last_successes
-                                   if e[0] > ten_min_ago]
-        self._last_errors[:] = [e for e in self._last_errors
+        self._last_successes = [e for e in self._last_successes
                                 if e[0] > ten_min_ago]
+        self._last_errors = [e for e in self._last_errors
+                             if e[0] > ten_min_ago]
 
     def recent_errors(self):
-        self._drop_old_events()
+        self._clean_and_read_events()
         return len(self._last_errors)
 
     def _ideal_number_of_replications_for_ideal_duration(self):
@@ -303,7 +320,7 @@ class ReplicationControl(object):
             return min(ideal_number, 2 * best_successful_number)
 
     def ideal_number_of_replications(self):
-        self._drop_old_events()
+        self._clean_and_read_events()
 
         # Choose the value to achieve replication in ideal_duration:
         ideal_number = self._ideal_number_of_replications_for_ideal_duration()
@@ -344,7 +361,7 @@ class ReplicationControl(object):
         return ideal_number
 
     def ideal_sleep_value(self):
-        self._drop_old_events()
+        self._clean_and_read_events()
 
         # If there was 1 error within last 5 minutes, pause for 5 seconds,
         # if there were 2 errors within last 5 minutes, pause for 10 seconds,
