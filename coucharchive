@@ -34,7 +34,21 @@ import urllib.request
 import couchdb
 
 
-MAX_NUMBER_OF_WORKERS = 128
+class MeasureDuration:
+    def __init__(self):
+        self.start = None
+        self.end = None
+
+    def __enter__(self):
+        self.start = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.end = time.time()
+        print(str((self.end - self.start) * 1000).replace('.', ','))
+
+
+MAX_NUMBER_OF_WORKERS = 64
 
 
 def _canonical_couchdb_url(url):
@@ -296,7 +310,7 @@ class ReplicationControl(object):
         if not len(self._last_successes):
             # We do not have enough data yet to return anything useful.
             # Start with 4 concurrent replications:
-            return 4
+            return 64
         else:
             # Compute the ideal number of concurrent replications, to finish in
             # ideal_duration:
