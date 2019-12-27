@@ -390,6 +390,7 @@ def replicate_couchdb_server(source_url, target_url,
                                 (in_queue, out_queue, control, source_url,
                                  target_url, reuse_db_if_exist))
     error = None
+    last_log = time.time()
 
     while len(dbs) and not error:
         ideal = control.ideal_number_of_replications()
@@ -397,18 +398,22 @@ def replicate_couchdb_server(source_url, target_url,
             in_queue.put(dbs.pop(0))
             control.running_replications.value += 1
 
-        logging.debug('Currently running %d replication workers'
-                      % control.running_replications.value)
-        logging.debug('Ideal speed = ' + ('%.1f rep/s' % control.ideal_speed
-                                          if ideal_duration else 'fastest') +
-                      '; current average speed = %.1f rep/s' %
-                      control.current_avge_speed)
-        n = control.recent_errors()
-        if n:
-            logging.debug(('There were %d CouchDB errors encountered in the '
-                           'last 5 minutes') % n)
+        # No more than one log per second:
+        if time.time() > last_log + 1:
+            last_log = time.time()
+            logging.debug('Currently running %d replication workers'
+                          % control.running_replications.value)
+            logging.debug('Ideal speed = ' +
+                          ('%.1f rep/s' % control.ideal_speed
+                           if ideal_duration else 'fastest') +
+                          '; current average speed = %.1f rep/s' %
+                          control.current_avge_speed)
+            n = control.recent_errors()
+            if n:
+                logging.debug(('There were %d CouchDB errors encountered in '
+                               'the last 5 minutes') % n)
 
-        time.sleep(1)
+        time.sleep(.1)
 
         while True:
             try:
