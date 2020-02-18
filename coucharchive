@@ -35,7 +35,7 @@ import couchdb
 
 
 MAX_NUMBER_OF_WORKERS = 128
-COUCHDB_MAX_RUN_QUEUE = 7
+COUCHDB_MAX_RUN_QUEUE = 18
 
 
 def _canonical_couchdb_url(url):
@@ -281,7 +281,7 @@ class ReplicationControl(object):
                                  timeout=60)['run_queue'],
                 _couchdb_request(self.target_url + '/_node/_local/_system',
                                  timeout=60)['run_queue'])
-            for _ in range(int(run_queue / COUCHDB_MAX_RUN_QUEUE)):
+            for _ in range(int((run_queue / COUCHDB_MAX_RUN_QUEUE) ** 2)):
                 self.report_error()
             logging.debug('CouchDB run_queue: %d' % run_queue)
             time.sleep(2)  # arbitrary
