@@ -34,7 +34,7 @@ import urllib.request
 import couchdb
 
 
-MAX_NUMBER_OF_WORKERS = 128
+MAX_NUMBER_OF_WORKERS = 64
 
 
 def _canonical_couchdb_url(url):
