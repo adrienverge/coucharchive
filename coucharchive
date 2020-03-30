@@ -34,9 +34,6 @@ import urllib.request
 import couchdb
 
 
-MAX_NUMBER_OF_WORKERS = 64
-
-
 def _canonical_couchdb_url(url):
     url = url if url.startswith('http://') else 'http://' + url
 
@@ -243,7 +240,7 @@ class CouchDBInstance(object):
 
 
 class ReplicationControl(object):
-    def __init__(self, total_replications, ideal_duration):
+    def __init__(self, total_replications, ideal_duration, max_workers):
         self.total_replications = total_replications
         self.running_replications = multiprocessing.Manager().Value('i', 0)
         self.completed_replications = multiprocessing.Manager().Value('i', 0)
@@ -252,6 +249,8 @@ class ReplicationControl(object):
         self._start_time = int(time.time())
         self.ideal_speed = 0
         self.current_avge_speed = 0
+
+        self.max_workers = max_workers
 
         self._last_successes_reported = multiprocessing.Queue()
         self._last_successes = []
@@ -355,8 +354,8 @@ class ReplicationControl(object):
             weighted_values.append(weight * i[1])
         ideal_number = sum(weighted_values) / sum(weights)
 
-        # ... and stay within [1, MAX_NUMBER_OF_WORKERS]
-        ideal_number = max(1, min(MAX_NUMBER_OF_WORKERS, ideal_number))
+        # ... and stay within [1, self.max_workers]
+        ideal_number = max(1, min(self.max_workers, ideal_number))
 
         return ideal_number
 
@@ -370,7 +369,7 @@ class ReplicationControl(object):
         return min(60, wait)  # stay within [5 s, 60 s]
 
 
-def replicate_couchdb_server(source_url, target_url,
+def replicate_couchdb_server(source_url, target_url, max_workers,
                              reuse_db_if_exist=False,
                              ignore_dbs=[],
                              ideal_duration=None):
@@ -385,8 +384,8 @@ def replicate_couchdb_server(source_url, target_url,
 
     in_queue = multiprocessing.Queue()
     out_queue = multiprocessing.Queue()
-    control = ReplicationControl(len(dbs), ideal_duration)
-    pool = multiprocessing.Pool(MAX_NUMBER_OF_WORKERS, replicate_databases,
+    control = ReplicationControl(len(dbs), ideal_duration, max_workers)
+    pool = multiprocessing.Pool(max_workers, replicate_databases,
                                 (in_queue, out_queue, control, source_url,
                                  target_url, reuse_db_if_exist))
     error = None
@@ -429,7 +428,7 @@ def replicate_couchdb_server(source_url, target_url,
                 error = result
                 break
 
-    for i in range(MAX_NUMBER_OF_WORKERS):
+    for i in range(max_workers):
         in_queue.put(None)  # message to workers to say "it's over"
     in_queue.close()
     pool.close()
@@ -599,7 +598,7 @@ def bug_1418_create_missing_documents(source_db, target_db):
                 prev_target_rev = rev
 
 
-def create(source, filename, ignore_dbs=[], ideal_duration=None):
+def create(source, filename, max_workers, ignore_dbs=[], ideal_duration=None):
     erlang_node = 'coucharchive-%s@localhost' % ''.join(
         random.choice(string.ascii_letters + string.digits) for _ in range(10))
 
@@ -607,7 +606,7 @@ def create(source, filename, ignore_dbs=[], ideal_duration=None):
         local_couchdb.start()
         logging.info('Launched CouchDB instance at %s' % local_couchdb.url)
 
-        replicate_couchdb_server(source, local_couchdb.url,
+        replicate_couchdb_server(source, local_couchdb.url, max_workers,
                                  ignore_dbs=ignore_dbs,
                                  ideal_duration=ideal_duration)
 
@@ -667,10 +666,10 @@ def load(filename):
     _load_archive(filename, callback)
 
 
-def restore(target, filename, reuse_db_if_exist=False, ignore_dbs=[],
-            ideal_duration=None):
+def restore(target, filename, max_workers, reuse_db_if_exist=False,
+            ignore_dbs=[], ideal_duration=None):
     def callback(local_couch_server_url):
-        replicate_couchdb_server(local_couch_server_url, target,
+        replicate_couchdb_server(local_couch_server_url, target, max_workers,
                                  reuse_db_if_exist=reuse_db_if_exist,
                                  ignore_dbs=ignore_dbs,
                                  ideal_duration=ideal_duration)
@@ -709,6 +708,9 @@ def main():
         '--ideal-duration', dest='ideal_duration', action='store',
         help='optimize concurrent replications and server load to finish in N '
         'seconds', default='fastest', type=check_ideal_duration)
+    sub['create'].add_argument(
+        '-w', '--max-workers', dest='max_workers', action='store', default=64,
+        help='the maximum number of concurrent replications', type=int)
 
     sub['restore'] = subparsers.add_parser('restore')
     sub['restore'].add_argument(
@@ -725,6 +727,9 @@ def main():
         '--ideal-duration', dest='ideal_duration', action='store',
         help='optimize concurrent replications and server load to finish in N '
         'seconds', default='fastest', type=check_ideal_duration)
+    sub['restore'].add_argument(
+        '-w', '--max-workers', dest='max_workers', action='store', default=64,
+        help='the maximum number of concurrent replications', type=int)
 
     sub['load'] = subparsers.add_parser('load')
     sub['load'].add_argument(
@@ -746,6 +751,9 @@ def main():
         '--ideal-duration', dest='ideal_duration', action='store',
         help='optimize concurrent replications and server load to finish in N '
         'seconds', default='fastest', type=check_ideal_duration)
+    sub['replicate'].add_argument(
+        '-w', '--max-workers', dest='max_workers', action='store', default=64,
+        help='the maximum number of concurrent replications', type=int)
 
     args = parser.parse_args()
 
@@ -785,16 +793,17 @@ def main():
         _check_couchdb_connection(args.target_server)
 
     if args.action == 'create':
-        create(args.source_server, args.output, ignore_dbs=ignore_dbs,
-               ideal_duration=args.ideal_duration)
+        create(args.source_server, args.output, args.max_workers,
+               ignore_dbs=ignore_dbs, ideal_duration=args.ideal_duration)
     elif args.action == 'restore':
-        restore(args.target_server, args.input,
+        restore(args.target_server, args.input, args.max_workers,
                 reuse_db_if_exist=args.reuse_db_if_exist,
                 ignore_dbs=ignore_dbs, ideal_duration=args.ideal_duration)
     elif args.action == 'load':
         load(args.input)
     elif args.action == 'replicate':
         replicate_couchdb_server(args.source_server, args.target_server,
+                                 args.max_workers,
                                  reuse_db_if_exist=args.reuse_db_if_exist,
                                  ignore_dbs=ignore_dbs,
                                  ideal_duration=args.ideal_duration)
