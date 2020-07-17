@@ -219,19 +219,21 @@ class CouchDBInstance(object):
             if not self.thread.is_alive():
                 raise Exception('CouchDB process died')
             try:
-                self.version = (urllib.request.urlopen('http://localhost:%d'
-                                                       % self.ports[0])
-                                .read().decode('utf-8'))
-                if '"couchdb":"Welcome"' in self.version:
-                    return
+                self.version_info = urllib.request.urlopen(
+                    'http://localhost:%d' % self.ports[0]).read().decode()
+                if '"couchdb":"Welcome"' in self.version_info:
+                    break
 
                 self.thread.terminate()
-                raise Exception('CouchDB answered: %s' % self.version)
+                raise Exception('CouchDB answered: %s' % self.version_info)
             except urllib.error.URLError:
                 time.sleep(0.2)
 
-        self.thread.terminate()
-        raise Exception('CouchDB server does not answer after 5 seconds')
+        if '"couchdb":"Welcome"' not in self.version_info:
+            self.thread.terminate()
+            raise Exception('CouchDB server does not answer after 5 seconds')
+
+        self.version = json.loads(self.version_info)['version']
 
     def stop(self):
         logging.info('Terminating local CouchDB instance')
@@ -624,7 +626,8 @@ def create(source, filename, max_workers, ignore_dbs=[], ideal_duration=None):
 
             info = (
                 'CouchDB backup made on %s\n' % datetime.now().isoformat() +
-                'with CouchDB version %s\n' % local_couchdb.version
+                'with CouchDB version %s, ' % local_couchdb.version +
+                'info: %s\n' % local_couchdb.version_info
             ).encode('utf-8')
             file = tarfile.TarInfo('info')
             file.size = len(info)
