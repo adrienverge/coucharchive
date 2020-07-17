@@ -172,6 +172,7 @@ class CouchDBInstance(object):
                     'database_dir = %s\n' % self.datadir +
                     'view_index_dir = %s\n' % self.datadir +
                     'max_dbs_open = 10000\n'
+                    'users_db_security_editable = true\n'  # for CouchDB 3+
                     '\n'
                     '[cluster]\n'
                     'q=1\n'  # ideal for a small, 1-node setup
