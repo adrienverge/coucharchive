@@ -107,3 +107,17 @@ To save a backup on AWS S3 and notify somebody via email:
  on Amazon S3.
  EOM
  $ sendmail user@example.com </tmp/email.txt
+
+Troubleshooting
+---------------
+
+``OSError: [Errno 28] No space left on device``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+coucharchive uses the ``/tmp`` folder, which can be to small.
+
+If it's the case you can try to enlarge it, for example:
+
+.. code:: bash
+
+    sudo mount -o remount,size=32G,noatime /tmp
