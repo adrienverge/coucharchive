@@ -183,6 +183,10 @@ class CouchDBInstance(object):
                     'connection_timeout = 120000\n'  # avoid req_timedout
                     'worker_processes = 1\n'
                     '\n'
+                    '[smoosh]\n'
+                    'db_channels = ,\n'
+                    'view_channels = ,\n'
+                    '\n'
                     '[admins]\n'
                     '%s = %s\n' % self.creds)
 
