@@ -116,7 +116,8 @@ Troubleshooting
 
 coucharchive uses the ``/tmp`` folder, which can be to small.
 
-If it's the case you can try to enlarge it, for example:
+If it's the case you can either use another location with ``--temp-dir``, or
+try to enlarge the ``/tmp`` partition, for example:
 
 .. code:: bash
 
