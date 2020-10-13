@@ -85,9 +85,10 @@ def _check_couchdb_connection(url):
 
 
 class CouchDBInstance(object):
-    def __init__(self, erlang_node, standalone_server=False):
+    def __init__(self, erlang_node, standalone_server=False, temp_dir=None):
         self.erlang_node = erlang_node
-        self.tempdir = tempfile.TemporaryDirectory(prefix='coucharchive-')
+        self.tempdir = tempfile.TemporaryDirectory(prefix='coucharchive-',
+                                                   dir=temp_dir)
         self.thread = None
         self.url = None
         self.standalone_server = standalone_server
@@ -605,11 +606,12 @@ def bug_1418_create_missing_documents(source_db, target_db):
                 prev_target_rev = rev
 
 
-def create(source, filename, max_workers, ignore_dbs=[], ideal_duration=None):
+def create(source, filename, max_workers, ignore_dbs=[], ideal_duration=None,
+           temp_dir=None):
     erlang_node = 'coucharchive-%s@localhost' % ''.join(
         random.choice(string.ascii_letters + string.digits) for _ in range(10))
 
-    with CouchDBInstance(erlang_node) as local_couchdb:
+    with CouchDBInstance(erlang_node, temp_dir=temp_dir) as local_couchdb:
         local_couchdb.start()
         logging.info('Launched CouchDB instance at %s' % local_couchdb.url)
 
@@ -638,12 +640,13 @@ def create(source, filename, max_workers, ignore_dbs=[], ideal_duration=None):
             tar.addfile(file, BytesIO(info))
 
 
-def _load_archive(filename, callback):
+def _load_archive(filename, callback, temp_dir=None):
     if not os.path.isfile(filename):
         raise Exception('File "%s" does not exist' % filename)
 
     with tarfile.open(filename) as tar, \
-            tempfile.TemporaryDirectory(prefix='coucharchive-') as tmp:
+            tempfile.TemporaryDirectory(prefix='coucharchive-',
+                                        dir=temp_dir) as tmp:
         logging.info('Extracting backup archive from %s' % filename)
         tar.extractall(path=tmp)
 
@@ -653,7 +656,7 @@ def _load_archive(filename, callback):
         else:  # for archives made before coucharchive 1.2.1
             erlang_node = 'coucharchive@localhost'
 
-        with CouchDBInstance(erlang_node) as local_couchdb:
+        with CouchDBInstance(erlang_node, temp_dir=temp_dir) as local_couchdb:
             os.rmdir(local_couchdb.datadir)
             os.rename(tmp + '/data', local_couchdb.datadir)
 
@@ -663,7 +666,7 @@ def _load_archive(filename, callback):
             callback(local_couchdb.url)
 
 
-def load(filename):
+def load(filename, temp_dir=None):
     def callback(local_couch_server_url):
         logging.info('Ready!')
         try:
@@ -671,18 +674,18 @@ def load(filename):
         except KeyboardInterrupt:
             pass
 
-    _load_archive(filename, callback)
+    _load_archive(filename, callback, temp_dir=temp_dir)
 
 
 def restore(target, filename, max_workers, reuse_db_if_exist=False,
-            ignore_dbs=[], ideal_duration=None):
+            ignore_dbs=[], ideal_duration=None, temp_dir=None):
     def callback(local_couch_server_url):
         replicate_couchdb_server(local_couch_server_url, target, max_workers,
                                  reuse_db_if_exist=reuse_db_if_exist,
                                  ignore_dbs=ignore_dbs,
                                  ideal_duration=ideal_duration)
 
-    _load_archive(filename, callback)
+    _load_archive(filename, callback, temp_dir=temp_dir)
 
 
 def main():
@@ -694,6 +697,9 @@ def main():
                         help='be more quiet (can be used multiple times)')
     parser.add_argument('-c', '--config', dest='config_file',
                         action='store', help='path to config file')
+    parser.add_argument('--temp-dir', action='store',
+                        help='temporary directory to run CouchDB and load '
+                        'archives')
     subparsers = parser.add_subparsers(dest='action')
     sub = {}
 
@@ -802,13 +808,15 @@ def main():
 
     if args.action == 'create':
         create(args.source_server, args.output, args.max_workers,
-               ignore_dbs=ignore_dbs, ideal_duration=args.ideal_duration)
+               ignore_dbs=ignore_dbs, ideal_duration=args.ideal_duration,
+               temp_dir=args.temp_dir)
     elif args.action == 'restore':
         restore(args.target_server, args.input, args.max_workers,
                 reuse_db_if_exist=args.reuse_db_if_exist,
-                ignore_dbs=ignore_dbs, ideal_duration=args.ideal_duration)
+                ignore_dbs=ignore_dbs, ideal_duration=args.ideal_duration,
+                temp_dir=args.temp_dir)
     elif args.action == 'load':
-        load(args.input)
+        load(args.input, temp_dir=args.temp_dir)
     elif args.action == 'replicate':
         replicate_couchdb_server(args.source_server, args.target_server,
                                  args.max_workers,
