@@ -84,6 +84,9 @@ def _check_couchdb_connection(url):
         sys.exit(1)
 
 
+RECOMMENDED_MAX_NOFILE = 65536
+
+
 class CouchDBInstance(object):
     def __init__(self, erlang_node, standalone_server=False):
         self.erlang_node = erlang_node
@@ -126,21 +129,20 @@ class CouchDBInstance(object):
         return port1, port2
 
     def _try_to_increase_rlimit_nofile(self):
-        MAX_NOFILE = 4096
-        # Try to increase the allowed number of open files, to avoid CouchDB
-        # errors:
+        # Try to increase the allowed number of open files (ulimit -n), to
+        # avoid CouchDB errors:
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        if soft < MAX_NOFILE and soft < hard:
+        if soft < RECOMMENDED_MAX_NOFILE and soft < hard:
             logging.debug('Trying to increase the max number of open files '
-                          '(currently %d)...' % soft)
+                          f'(currently {soft})...')
             resource.setrlimit(resource.RLIMIT_NOFILE,
-                               (min(MAX_NOFILE, hard), hard))
+                               (min(RECOMMENDED_MAX_NOFILE, hard), hard))
             soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        if soft < MAX_NOFILE:
+        if soft < RECOMMENDED_MAX_NOFILE:
             logging.warning(
-                ('WARNING: Max number of open files is low (%d), it could '
-                 'result in server errors. If you have errors, consider '
-                 'increasing the system hard limit.') % soft)
+                f'WARNING: Max number of open files is low ({soft}), it could '
+                'result in server errors. If you have errors, consider '
+                'increasing the system hard limit.')
 
     def _setup(self):
         self._try_to_increase_rlimit_nofile()
@@ -508,7 +510,7 @@ def replicate_one_database(control, source, source_url, source_is_local,
             if retries == 0:
                 if e.args[0][1][1] in ('no_majority', 'no_ring'):
                     logging.error('Retry with a greater ulimit (e.g. '
-                                  '`ulimit -n 8192`)')
+                                  f'`ulimit -n {2*RECOMMENDED_MAX_NOFILE}`)')
                 raise
             control.report_error()
             time.sleep(control.ideal_sleep_value())
