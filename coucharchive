@@ -90,7 +90,8 @@ RECOMMENDED_MAX_NOFILE = 65536
 class CouchDBInstance(object):
     def __init__(self, erlang_node, standalone_server=False):
         self.erlang_node = erlang_node
-        self.tempdir = tempfile.TemporaryDirectory(prefix='coucharchive-')
+        self.tempdir = tempfile.TemporaryDirectory(
+            prefix='coucharchive-', dir='/home/hoel/Tolteck/tmp_on_disk')
         self.thread = None
         self.url = None
         self.standalone_server = standalone_server
@@ -126,7 +127,7 @@ class CouchDBInstance(object):
         _, port2 = s2.getsockname()
         s1.close()
         s2.close()
-        return port1, port2
+        return 5984, 5986
 
     def _try_to_increase_rlimit_nofile(self):
         # Try to increase the allowed number of open files (ulimit -n), to
@@ -169,12 +170,20 @@ class CouchDBInstance(object):
                     '\n'
                     '[httpd]\n'
                     'port = %d\n' % self.ports[1] +
+                    'enable_cors = true\n'
+                    'WWW-Authenticate = Basic realm="Who are you?"\n'
                     '\n'
                     '[couchdb]\n'
                     'database_dir = %s\n' % self.datadir +
                     'view_index_dir = %s\n' % self.datadir +
                     'max_dbs_open = 10000\n'
                     'users_db_security_editable = true\n'  # for CouchDB 3+
+                    '\n'
+                    '[cors]\n'
+                    'credentials = true\n'
+                    'origins = *\n'
+                    'methods = GET, HEAD, POST, PUT, DELETE\n'
+                    'headers = Accept, Authorization, Content-Type, Origin\n'
                     '\n'
                     '[cluster]\n'
                     'q=1\n'  # ideal for a small, 1-node setup
@@ -198,7 +207,7 @@ class CouchDBInstance(object):
                    COUCHDB_INI_FILES=(self.confdir + '/default.ini ' +
                                       self.confdir + '/local.ini ' +
                                       self.confdir + '/local.d'))
-        log = open(self.tempdir.name + '/log', 'w')
+        log = open('/tmp/coucharchive_log', 'w')
 
         class CouchDBRunnerThread(threading.Thread):
             def __init__(self):
@@ -645,7 +654,8 @@ def _load_archive(filename, callback):
         raise Exception('File "%s" does not exist' % filename)
 
     with tarfile.open(filename) as tar, \
-            tempfile.TemporaryDirectory(prefix='coucharchive-') as tmp:
+            tempfile.TemporaryDirectory(
+                prefix='coucharchive-', dir='/home/hoel/Tolteck/tmp_on_disk') as tmp:
         logging.info('Extracting backup archive from %s' % filename)
         tar.extractall(path=tmp)
 
