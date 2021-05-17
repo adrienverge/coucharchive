@@ -92,6 +92,7 @@ class CouchDBInstance(object):
         self.erlang_node = erlang_node
         self.tempdir = tempfile.TemporaryDirectory(
             prefix='coucharchive-', dir='/home/hoel/Tolteck/tmp_on_disk')
+        logging.info(f'============= Using data dir {self.tempdir.name}')
         self.thread = None
         self.url = None
         self.standalone_server = standalone_server
@@ -114,9 +115,7 @@ class CouchDBInstance(object):
         return self.tempdir.name + '/data'
 
     def _random_credential(self):
-        return 'root', ''.join(
-            random.choice(string.ascii_letters + string.digits)
-            for _ in range(10))
+        return 'root', 'password'
 
     def _two_unused_ports(self):
         s1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -127,7 +126,7 @@ class CouchDBInstance(object):
         _, port2 = s2.getsockname()
         s1.close()
         s2.close()
-        return 5984, 5986
+        return 5084, 5086
 
     def _try_to_increase_rlimit_nofile(self):
         # Try to increase the allowed number of open files (ulimit -n), to
@@ -665,6 +664,7 @@ def _load_archive(filename, callback):
         else:  # for archives made before coucharchive 1.2.1
             erlang_node = 'coucharchive@localhost'
 
+        logging.info(f'============= Using erlang node name {erlang_node}')
         with CouchDBInstance(erlang_node) as local_couchdb:
             os.rmdir(local_couchdb.datadir)
             os.rename(tmp + '/data', local_couchdb.datadir)
