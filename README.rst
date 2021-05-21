@@ -88,7 +88,17 @@ For repetitive backups, you can use a config file:
 
  $ cat config.ini
  [source]
- url = http://root:password@my-server:5984
+ url = http://root:password@localhost:5984
+ #auth_method = 'basic'
+ #username = 'root'
+ #password = 'password'
+
+ [target]
+ url =
+ #auth_method = 'proxy'
+ #username = 'root'
+ #roles = '_admin'
+ #token = 'baddecafbaddecafbaddecafbaddecafbaddecaf'
 
  [replication]
  ignore_dbs = db_to_ignore, other_useless_db
@@ -107,6 +117,17 @@ To save a backup on AWS S3 and notify somebody via email:
  on Amazon S3.
  EOM
  $ sendmail user@example.com </tmp/email.txt
+
+To generate a proxy authentication token:
+
+.. code:: bash
+
+ $ python3
+ >>> import hmac
+ >>> import hashlib
+ >>> hmac.new(b'proxysecret', b'username', hashlib.sha1).hexdigest()
+ >>> 'baddecafbaddecafbaddecafbaddecafbaddecaf'
+
 
 Troubleshooting
 ---------------

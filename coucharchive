@@ -4,12 +4,9 @@
 # All rights reserved
 
 import argparse
-import base64
 import configparser
-from datetime import datetime
 import fileinput
 import getpass
-from io import BytesIO
 import json
 import logging
 import math
@@ -28,23 +25,37 @@ import tarfile
 import tempfile
 import threading
 import time
-from urllib.parse import quote, urlparse, urlsplit, urlunsplit
+import urllib.error
 import urllib.request
+from datetime import datetime
+from io import BytesIO
+from urllib.parse import urlsplit, urlunsplit, unquote
 
 import couchdb
 
 
-def _canonical_couchdb_url(url):
-    url = url if url.startswith('http://') else 'http://' + url
+def _couchdb_is_local(server_payload):
+    parts = urlsplit(server_payload['url'])
+    return parts.hostname in ('localhost', '127.0.0.1', '::1')
 
-    parts = list(urlsplit(url))
-    server = parts[1]
-    username, password = None, None
-    if '@' in server:
-        credentials, server = server.rsplit('@', 1)
-        credentials = credentials.split(':', 1)
-        username = credentials.pop(0)
-        password = credentials.pop(0) if credentials else None
+
+def _couchdb_sanitize_url(url):
+    url = url if urlsplit(url).netloc else 'http://' + url
+    url = url if url.endswith('/') else url + '/'
+    return url
+
+
+def _couchdb_basic_auth_payload(url, username=None, password=None):
+    url = _couchdb_sanitize_url(url)
+
+    parts = urlsplit(url, scheme='http')
+    server = parts.hostname if not parts.port else '%s:%d' % (parts.hostname, parts.port)
+
+    if not username and parts.username:
+        username = unquote(parts.username)
+    if not password and parts.password:
+        password = unquote(parts.password)
+
     while not username:
         print('CouchDB admin for %s: ' % server, end='', file=sys.stderr)
         username = input()
@@ -52,25 +63,64 @@ def _canonical_couchdb_url(url):
         password = getpass.getpass(
             'CouchDB password for %s@%s: ' % (username, server), sys.stderr)
 
-    parts[1] = server
-    url = urlunsplit(parts)       # http://server/db/
-    parts[1] = '%s:%s@%s' % (quote(username, safe=[]),
-                             quote(password, safe=[]),
-                             server)
-    auth_url = urlunsplit(parts)  # http://user:pass@server/db/
-    return auth_url
+    parts = parts._replace(netloc=server)
+
+    payload = {
+        'url': urlunsplit(parts),
+        'headers': {
+            'Authorization': couchdb.http.basic_auth((username, password)).decode('utf-8'),
+        },
+    }
+    return payload
 
 
-def _couchdb_request(url):
-    parts = list(urlsplit(url))
-    credentials, server = parts[1].rsplit('@', 1)
-    username, password = credentials.split(':', 1)
-    auth = base64.b64encode(('%s:%s' % (username, password))
-                            .encode('utf-8')).decode('utf-8')
-    parts[1] = server
-    url = urlunsplit(parts)
-    req = urllib.request.Request(url,
-                                 headers={'Authorization': 'Basic %s' % auth})
+def _couchdb_proxy_auth_payload(url, username=None, roles='_admin', token=None):
+    url = _couchdb_sanitize_url(url)
+
+    parts = urlsplit(url, scheme='http')
+    server = parts.hostname if not parts.port else '%s:%d' % (parts.hostname, parts.port)
+
+    if not username and parts.username:
+        username = unquote(parts.username)
+    if not token and parts.password:
+        token = unquote(parts.password)
+
+    while not username:
+        print('CouchDB admin for %s: ' % server, end='', file=sys.stderr)
+        username = input()
+    while not token:
+        token = getpass.getpass(
+            'CouchDB token for %s@%s: ' % (username, server), sys.stderr)
+
+    parts = parts._replace(netloc=server)
+
+    payload = {
+        'url': urlunsplit(parts),
+        'headers': {
+            'X-Auth-CouchDB-UserName': username,
+            'X-Auth-CouchDB-Roles': roles,
+            'X-Auth-CouchDB-Token': token,
+        },
+    }
+    return payload
+
+
+def _couchdb_server_payload(server_config):
+    auth_method = server_config.pop('auth_method')
+    server_config = {k: v for k, v in server_config.items() if v is not None}
+
+    if auth_method == 'basic':
+        payload = _couchdb_basic_auth_payload(**server_config)
+    elif auth_method == 'proxy':
+        payload = _couchdb_proxy_auth_payload(**server_config)
+    else:
+        raise Exception('Invalid auth method: %s' % auth_method)
+
+    return payload
+
+
+def _couchdb_request(server_payload):
+    req = urllib.request.Request(**server_payload)
     response = urllib.request.urlopen(req)
     return json.loads(response.read().decode('utf-8'))
 
@@ -216,7 +266,7 @@ class CouchDBInstance(object):
         self.thread = CouchDBRunnerThread()
         self.thread.start()
 
-        self.url = 'http://%s:%s@localhost:%d' % (self.creds + self.ports[:1])
+        self.url = 'http://%s:%s@localhost:%d/' % (self.creds + self.ports[:1])
 
         if self.standalone_server:
             return
@@ -314,11 +364,11 @@ class ReplicationControl(object):
                 1, self._start_time + self.ideal_duration - time.time())
             self.ideal_speed = databases_left / time_left
             self.current_avge_speed = (
-                len(self._last_successes) /
-                min(time.time() - self._start_time, 5 * 60))
+                    len(self._last_successes) /
+                    min(time.time() - self._start_time, 5 * 60))
             current_avge_replications = (
-                sum(e[1] for e in self._last_successes) /
-                len(self._last_successes))
+                    sum(e[1] for e in self._last_successes) /
+                    len(self._last_successes))
             ideal_number = round(current_avge_replications *
                                  self.ideal_speed / self.current_avge_speed)
 
@@ -378,25 +428,23 @@ class ReplicationControl(object):
         return min(60, wait)  # stay within [5 s, 60 s]
 
 
-def replicate_couchdb_server(source_url, target_url, max_workers,
+def replicate_couchdb_server(source, target, max_workers,
                              reuse_db_if_exist=False,
                              ignore_dbs=[],
                              ideal_duration=None):
-    while source_url.endswith('/'):
-        source_url = source_url[:-1]
-    while target_url.endswith('/'):
-        target_url = target_url[:-1]
-
     ignore_dbs += ('_global_changes', '_metadata', '_replicator')
-    dbs = [db for db in list(couchdb.Server(source_url))
+
+    source_server = couchdb.Server(couchdb.http.Resource(**source, session=None))
+
+    dbs = [db for db in list(source_server)
            if db not in ignore_dbs]
 
     in_queue = multiprocessing.Queue()
     out_queue = multiprocessing.Queue()
     control = ReplicationControl(len(dbs), ideal_duration, max_workers)
     pool = multiprocessing.Pool(max_workers, replicate_databases,
-                                (in_queue, out_queue, control, source_url,
-                                 target_url, reuse_db_if_exist))
+                                (in_queue, out_queue, control, source,
+                                 target, reuse_db_if_exist))
     error = None
     last_log = time.time()
 
@@ -447,40 +495,34 @@ def replicate_couchdb_server(source_url, target_url, max_workers,
         raise error
 
 
-def replicate_databases(in_queue, out_queue, control, source_url, target_url,
+def replicate_databases(in_queue, out_queue, control, source, target,
                         reuse_db_if_exist):
-    # Create one TCP connection per worker process:
-    source = couchdb.Server(source_url)
-    target = couchdb.Server(target_url)
-    source_host = (urlparse(source_url).netloc
-                   .rsplit('@', 1)[-1].rsplit(':', 1)[0])
-    source_is_local = source_host in ('localhost', '127.0.0.1', '::1')
-
     while True:
         try:
-            item = in_queue.get(True, 1)
+            db = in_queue.get(True, 1)
         except queue.Empty:
             continue
 
-        if item is None:  # message saying "it's over"
+        if db is None:  # message saying "it's over"
             break
 
         try:
-            replicate_one_database(control, source, source_url,
-                                   source_is_local, target, target_url,
-                                   reuse_db_if_exist, item)
+            replicate_one_database(control, source, target, reuse_db_if_exist, db)
             out_queue.put(True)  # message to report success to the parent
         except Exception as e:
             out_queue.put(e)  # message to report failure to the parent
             raise
 
 
-def replicate_one_database(control, source, source_url, source_is_local,
-                           target, target_url, reuse_db_if_exist, db):
+def replicate_one_database(control, source, target, reuse_db_if_exist, db):
     retries = 10
 
+    source_server = couchdb.Server(couchdb.http.Resource(**source, session=None))
+    target_server = couchdb.Server(couchdb.http.Resource(**target, session=None))
+    replication_server = source_server if _couchdb_is_local(source) else target_server
+
     try:
-        target.create(db)
+        target_server.create(db)
     except couchdb.http.PreconditionFailed as e:
         if e.args[0][0] == 'file_exists' and db in ('_users',):
             pass
@@ -490,11 +532,15 @@ def replicate_one_database(control, source, source_url, source_is_local,
             logging.error('Failed to create database %s' % db)
             raise
 
-    server = source if source_is_local else target
-    server.replicate(source_url + '/' + db, target_url + '/' + db)
+    replication_payload = {
+        'source': {**source, 'url': source.get('url') + db},
+        'target': {**target, 'url': target.get('url') + db},
+    }
 
-    source_db = couchdb.Database(source_url + '/' + db)
-    target_db = couchdb.Database(target_url + '/' + db)
+    replication_server.replicate(**replication_payload)
+
+    source_db = source_server[db]
+    target_db = target_server[db]
 
     while True:
         try:
@@ -510,7 +556,7 @@ def replicate_one_database(control, source, source_url, source_is_local,
             if retries == 0:
                 if e.args[0][1][1] in ('no_majority', 'no_ring'):
                     logging.error('Retry with a greater ulimit (e.g. '
-                                  f'`ulimit -n {2*RECOMMENDED_MAX_NOFILE}`)')
+                                  f'`ulimit -n {2 * RECOMMENDED_MAX_NOFILE}`)')
                 raise
             control.report_error()
             time.sleep(control.ideal_sleep_value())
@@ -527,7 +573,7 @@ def replicate_one_database(control, source, source_url, source_is_local,
             elif source_len > target_len:
                 # Overcome bug https://github.com/apache/couchdb/issues/1418
                 bug_1418_create_missing_documents(source_db, target_db)
-                server.replicate(source_url + '/' + db, target_url + '/' + db)
+                replication_server.replicate(**replication_payload)
         except couchdb.http.ServerError:
             pass
 
@@ -615,7 +661,8 @@ def create(source, filename, max_workers, ignore_dbs=[], ideal_duration=None):
         local_couchdb.start()
         logging.info('Launched CouchDB instance at %s' % local_couchdb.url)
 
-        replicate_couchdb_server(source, local_couchdb.url, max_workers,
+        target = _couchdb_basic_auth_payload(local_couchdb.url)
+        replicate_couchdb_server(source, target, max_workers,
                                  ignore_dbs=ignore_dbs,
                                  ideal_duration=ideal_duration)
 
@@ -631,9 +678,9 @@ def create(source, filename, max_workers, ignore_dbs=[], ideal_duration=None):
             tar.addfile(file, BytesIO(erlang_node.encode('utf-8')))
 
             info = (
-                'CouchDB backup made on %s\n' % datetime.now().isoformat() +
-                'with CouchDB version %s, ' % local_couchdb.version +
-                'info: %s\n' % local_couchdb.version_info
+                    'CouchDB backup made on %s\n' % datetime.now().isoformat() +
+                    'with CouchDB version %s, ' % local_couchdb.version +
+                    'info: %s\n' % local_couchdb.version_info
             ).encode('utf-8')
             file = tarfile.TarInfo('info')
             file.size = len(info)
@@ -666,7 +713,7 @@ def _load_archive(filename, callback):
 
 
 def load(filename):
-    def callback(local_couch_server_url):
+    def callback(_):
         logging.info('Ready!')
         try:
             time.sleep(365 * 24 * 3600)
@@ -679,7 +726,8 @@ def load(filename):
 def restore(target, filename, max_workers, reuse_db_if_exist=False,
             ignore_dbs=[], ideal_duration=None):
     def callback(local_couch_server_url):
-        replicate_couchdb_server(local_couch_server_url, target, max_workers,
+        source = _couchdb_basic_auth_payload(local_couch_server_url)
+        replicate_couchdb_server(source, target, max_workers,
                                  reuse_db_if_exist=reuse_db_if_exist,
                                  ignore_dbs=ignore_dbs,
                                  ideal_duration=ideal_duration)
@@ -709,23 +757,53 @@ def main():
 
     sub['create'] = subparsers.add_parser('create')
     sub['create'].add_argument(
-        '--from', dest='source_server', action='store',
+        '--from', dest='source_server_url', action='store',
         help='source CouchDB server to create archive from')
+    sub['create'].add_argument(
+        '--from-auth-method', dest='source_server_auth_method', action='store',
+        help='source CouchDB server auth method', default='basic', choices=['basic', 'proxy'])
+    sub['create'].add_argument(
+        '--from-username', dest='source_server_username', action='store',
+        help='source CouchDB server username')
+    sub['create'].add_argument(
+        '--from-password', dest='source_server_password', action='store',
+        help='source CouchDB server basic auth password')
+    sub['create'].add_argument(
+        '--from-roles', dest='source_server_roles', action='store',
+        help='source CouchDB server proxy auth role')
+    sub['create'].add_argument(
+        '--from-token', dest='source_server_token', action='store',
+        help='source CouchDB server proxy auth token')
     sub['create'].add_argument(
         '-o', '--output', dest='output', action='store', required=True,
         help='path to archive to create')
     sub['create'].add_argument(
         '--ideal-duration', dest='ideal_duration', action='store',
         help='optimize concurrent replications and server load to finish in N '
-        'seconds', default='fastest', type=check_ideal_duration)
+             'seconds', default='fastest', type=check_ideal_duration)
     sub['create'].add_argument(
         '-w', '--max-workers', dest='max_workers', action='store', default=64,
         help='the maximum number of concurrent replications', type=int)
 
     sub['restore'] = subparsers.add_parser('restore')
     sub['restore'].add_argument(
-        '--to', dest='target_server', action='store',
+        '--to', dest='target_server_url', action='store',
         help='target CouchDB server to restore archive to')
+    sub['restore'].add_argument(
+        '--to-auth-method', dest='target_server_auth_method', action='store',
+        help='source CouchDB server auth method', default='basic', choices=['basic', 'proxy'])
+    sub['restore'].add_argument(
+        '--to-username', dest='target_server_username', action='store',
+        help='source CouchDB server username')
+    sub['restore'].add_argument(
+        '--to-password', dest='target_server_password', action='store',
+        help='source CouchDB server basic auth password')
+    sub['restore'].add_argument(
+        '--to-roles', dest='target_server_roles', action='store',
+        help='source CouchDB server proxy auth role')
+    sub['restore'].add_argument(
+        '--to-token', dest='target_server_token', action='store',
+        help='source CouchDB server proxy auth token')
     sub['restore'].add_argument(
         '-i', '--input', dest='input', action='store', required=True,
         help='path to archive to restore')
@@ -736,7 +814,7 @@ def main():
     sub['restore'].add_argument(
         '--ideal-duration', dest='ideal_duration', action='store',
         help='optimize concurrent replications and server load to finish in N '
-        'seconds', default='fastest', type=check_ideal_duration)
+             'seconds', default='fastest', type=check_ideal_duration)
     sub['restore'].add_argument(
         '-w', '--max-workers', dest='max_workers', action='store', default=64,
         help='the maximum number of concurrent replications', type=int)
@@ -748,11 +826,41 @@ def main():
 
     sub['replicate'] = subparsers.add_parser('replicate')
     sub['replicate'].add_argument(
-        '--from', dest='source_server', action='store',
+        '--from', dest='source_server_url', action='store',
         help='source CouchDB server to replicate from')
     sub['replicate'].add_argument(
-        '--to', dest='target_server', action='store',
+        '--from-auth-method', dest='source_server_auth_method', action='store',
+        help='source CouchDB server auth method', default='basic', choices=['basic', 'proxy'])
+    sub['replicate'].add_argument(
+        '--from-username', dest='source_server_username', action='store',
+        help='source CouchDB server username')
+    sub['replicate'].add_argument(
+        '--from-password', dest='source_server_password', action='store',
+        help='source CouchDB server basic auth password')
+    sub['replicate'].add_argument(
+        '--from-roles', dest='source_server_roles', action='store',
+        help='source CouchDB server proxy auth role')
+    sub['replicate'].add_argument(
+        '--from-token', dest='source_server_token', action='store',
+        help='source CouchDB server proxy auth token')
+    sub['replicate'].add_argument(
+        '--to', dest='target_server_url', action='store',
         help='target CouchDB server to replicate to')
+    sub['replicate'].add_argument(
+        '--to-auth-method', dest='target_server_auth_method', action='store',
+        help='source CouchDB server auth method', default='basic', choices=['basic', 'proxy'])
+    sub['replicate'].add_argument(
+        '--to-username', dest='target_server_username', action='store',
+        help='source CouchDB server username')
+    sub['replicate'].add_argument(
+        '--to-password', dest='target_server_password', action='store',
+        help='source CouchDB server basic auth password')
+    sub['replicate'].add_argument(
+        '--to-roles', dest='target_server_roles', action='store',
+        help='source CouchDB server proxy auth role')
+    sub['replicate'].add_argument(
+        '--to-token', dest='target_server_token', action='store',
+        help='source CouchDB server proxy auth token')
     sub['replicate'].add_argument(
         '--reuse-db-if-exist', dest='reuse_db_if_exist',
         action='store_true', default=False,
@@ -760,7 +868,7 @@ def main():
     sub['replicate'].add_argument(
         '--ideal-duration', dest='ideal_duration', action='store',
         help='optimize concurrent replications and server load to finish in N '
-        'seconds', default='fastest', type=check_ideal_duration)
+             'seconds', default='fastest', type=check_ideal_duration)
     sub['replicate'].add_argument(
         '-w', '--max-workers', dest='max_workers', action='store', default=64,
         help='the maximum number of concurrent replications', type=int)
@@ -778,41 +886,57 @@ def main():
         config.read(args.config_file)
 
     if args.action in ('create', 'replicate'):
-        if not args.source_server and 'source' in config.sections():
-            args.source_server = config['source'].get('url', '')
-        if not args.source_server:
+        source_args = {
+            'url': args.source_server_url,
+            'auth_method': args.source_server_auth_method,
+            'username': args.source_server_username,
+            'password': args.source_server_password,
+            'roles': args.source_server_roles,
+            'token': args.source_server_token,
+        }
+        source_config = {**config['source'], **source_args} if 'source' in config.sections() else source_args
+
+        if not source_config.get('url'):
             sub[args.action].print_help()
             parser.exit(1)
+
+        source_server = _couchdb_server_payload(source_config)
+        _check_couchdb_connection(source_server)
+
     if args.action in ('restore', 'replicate'):
-        if not args.target_server and 'target' in config.sections():
-            args.target_server = config['target'].get('url', '')
-        if not args.target_server:
+        target_args = {
+            'url': args.target_server_url,
+            'auth_method': args.target_server_auth_method,
+            'username': args.target_server_username,
+            'password': args.target_server_password,
+            'roles': args.target_server_roles,
+            'token': args.target_server_token,
+        }
+        target_config = {**config['target'], **target_args} if 'target' in config.sections() else target_args
+
+        if not target_config.get('url'):
             sub[args.action].print_help()
             parser.exit(1)
+
+        target_server = _couchdb_server_payload(target_config)
+        _check_couchdb_connection(target_server)
 
     ignore_dbs = []
     if 'replication' in config.sections():
         ignore_dbs = config['replication'].get('ignore_dbs', '').split(',')
         ignore_dbs = [db.strip() for db in ignore_dbs if db.strip()]
 
-    if getattr(args, 'source_server', None):
-        args.source_server = _canonical_couchdb_url(args.source_server)
-        _check_couchdb_connection(args.source_server)
-    if getattr(args, 'target_server', None):
-        args.target_server = _canonical_couchdb_url(args.target_server)
-        _check_couchdb_connection(args.target_server)
-
     if args.action == 'create':
-        create(args.source_server, args.output, args.max_workers,
+        create(source_server, args.output, args.max_workers,
                ignore_dbs=ignore_dbs, ideal_duration=args.ideal_duration)
     elif args.action == 'restore':
-        restore(args.target_server, args.input, args.max_workers,
+        restore(target_server, args.input, args.max_workers,
                 reuse_db_if_exist=args.reuse_db_if_exist,
                 ignore_dbs=ignore_dbs, ideal_duration=args.ideal_duration)
     elif args.action == 'load':
         load(args.input)
     elif args.action == 'replicate':
-        replicate_couchdb_server(args.source_server, args.target_server,
+        replicate_couchdb_server(source_server, target_server,
                                  args.max_workers,
                                  reuse_db_if_exist=args.reuse_db_if_exist,
                                  ignore_dbs=ignore_dbs,
